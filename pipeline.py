@@ -100,6 +100,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
     if target_labels:
         print(f"  Labels     : {len(target_labels)} brands")
     if use_ocr:
+        print(f"  OCR backend: {config.ocr_backend}")
         print(f"  OCR boost  : +{config.ocr_confidence_boost:.0%} on text match")
     print(f"{'='*60}\n")
 
@@ -122,6 +123,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
             gpu=use_gpu,
             match_threshold=config.ocr_match_threshold,
             confidence_boost=config.ocr_confidence_boost,
+            backend=config.ocr_backend,
         )
 
     tracker = BrandTracker(sample_fps=config.fps, target_labels=target_labels)
@@ -312,6 +314,10 @@ Examples:
         "--ocr-boost", type=float, default=0.15,
         help="Confidence boost added on OCR text match in 'both' mode (default: 0.15)",
     )
+    label_group.add_argument(
+        "--ocr-backend", choices=["paddle", "easyocr"], default="easyocr",
+        help="OCR engine: easyocr (default, avoids Paddle segfault on CPU) or paddle",
+    )
 
     args = parser.parse_args()
 
@@ -331,6 +337,7 @@ Examples:
         save_cropped_logos=not args.no_crops,
         target_labels=target_labels,
         labels_file=args.labels_file,
+        ocr_backend=args.ocr_backend,
         ocr_languages=[l.strip() for l in args.ocr_lang.split(",")],
         ocr_match_threshold=args.ocr_match_threshold,
         ocr_confidence_boost=args.ocr_boost,

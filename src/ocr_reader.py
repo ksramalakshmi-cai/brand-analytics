@@ -1,12 +1,13 @@
 """
-OCR-based text extraction for logo/brand detection using PaddleOCR.
+OCR-based text extraction for logo/brand detection.
+
+Supports two backends (set via config or --ocr-backend):
+  - easyocr  Default; avoids Paddle segfaults on CPU-only machines.
+  - paddle   PaddleOCR (faster on GPU; can segfault on some CPU environments).
 
 Two operating modes:
-  1. **Crop mode** (used with YOLO) — reads text inside a bounding box and
-     fuzzy-matches it against known labels to boost confidence.
-  2. **Full-frame mode** (OCR-only pipeline) — scans the entire frame for
-     text, matches against labels, and returns Detection objects with the
-     bounding boxes that PaddleOCR found.
+  1. Crop mode (used with YOLO) — read text inside a bounding box, fuzzy-match to labels.
+  2. Full-frame mode (OCR-only pipeline) — scan entire frame, return Detection objects for matches.
 """
 
 from __future__ import annotations
@@ -16,28 +17,13 @@ import re
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
 
-# Prevent Intel MKL segfaults on CPU-only machines — must be set before
-# PaddlePaddle is imported anywhere.
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-
 import cv2
 import numpy as np
 
-_reader = None  # lazy singleton
-
-
-def _get_reader(lang: str, gpu: bool):
-    """Lazy-init PaddleOCR (heavy to create, so we cache it)."""
-    global _reader
-    if _reader is None:
-        from paddleocr import PaddleOCR
-        try:
-            _reader = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=gpu)
-        except (TypeError, ValueError):
-            _reader = PaddleOCR(use_angle_cls=True, lang=lang)
-    return _reader
+# Only set for Paddle backend; must be before paddle is ever imported.
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 
 def _normalise(text: str) -> str:
@@ -52,15 +38,7 @@ def _best_match(
     target_labels: List[str],
     threshold: float,
 ) -> Tuple[Optional[str], float]:
-    """
-    Return (matched_label, similarity_ratio) if the best fuzzy match is
-    above *threshold*, otherwise (None, 0.0).
-
-    Matching strategy:
-      1. Exact substring — if the normalised target appears inside the
-         normalised OCR text (or vice-versa), ratio = 1.0.
-      2. SequenceMatcher ratio — longest-common-subsequence based.
-    """
+    """Return (matched_label, similarity_ratio) if best fuzzy match >= threshold else (None, 0.0)."""
     norm_ocr = _normalise(ocr_text)
     if not norm_ocr:
         return None, 0.0
@@ -72,10 +50,8 @@ def _best_match(
         norm_label = _normalise(label)
         if not norm_label:
             continue
-
         if norm_label in norm_ocr or norm_ocr in norm_label:
             return label, 1.0
-
         ratio = SequenceMatcher(None, norm_ocr, norm_label).ratio()
         if ratio > best_ratio:
             best_ratio = ratio
@@ -87,19 +63,11 @@ def _best_match(
 
 
 def _parse_paddle_result(result) -> List[Tuple[list, str, float]]:
-    """
-    Normalise PaddleOCR output into a flat list of (bbox, text, confidence).
-
-    Handles multiple PaddleOCR output formats:
-      - Legacy: [[[(bbox, (text, conf)), ...], ...]]
-      - v3+:    [[(bbox, (text, conf)), ...]]  or  [None]
-      - v5:     may return dicts with 'rec_text', 'rec_score', 'dt_polys'
-    """
+    """Normalise PaddleOCR output to list of (bbox, text, confidence)."""
     entries: List[Tuple[list, str, float]] = []
     if result is None:
         return entries
 
-    # v5+ dict-based output: list of dicts with 'rec_text', 'rec_score', etc.
     if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
         for item in result:
             text = item.get("rec_text", "") or item.get("text", "")
@@ -111,7 +79,6 @@ def _parse_paddle_result(result) -> List[Tuple[list, str, float]]:
                 entries.append((bbox, text, conf))
         return entries
 
-    # Legacy / v3 list-of-pages format
     for page in result:
         if page is None:
             continue
@@ -142,7 +109,7 @@ def _parse_paddle_result(result) -> List[Tuple[list, str, float]]:
 
 
 class OCRReader:
-    """Wraps PaddleOCR and provides brand-label matching."""
+    """Single interface for OCR + brand matching; uses EasyOCR or PaddleOCR based on backend."""
 
     def __init__(
         self,
@@ -151,46 +118,56 @@ class OCRReader:
         gpu: bool = True,
         match_threshold: float = 0.5,
         confidence_boost: float = 0.15,
+        backend: str = "easyocr",
     ):
         self.target_labels = target_labels
         self.languages = languages or ["en"]
         self.gpu = gpu
         self.match_threshold = match_threshold
         self.confidence_boost = confidence_boost
-        paddle_lang = self.languages[0] if self.languages else "en"
-        self._reader = _get_reader(paddle_lang, self.gpu)
+        self._backend = backend.lower()
 
-    # -------------------------------------------------------------- helpers
-
-    def read_text(self, image: np.ndarray) -> str:
-        """Run OCR on a BGR image and return the concatenated text."""
-        if image.size == 0:
-            return ""
-        result = self._reader.ocr(image)
-        entries = _parse_paddle_result(result)
-        texts = [text for _, text, conf in entries if conf > 0.2]
-        return " ".join(texts)
+        if self._backend == "easyocr":
+            import easyocr
+            self._reader = easyocr.Reader(self.languages, gpu=self.gpu, verbose=False)
+        else:
+            from paddleocr import PaddleOCR
+            lang = self.languages[0] if self.languages else "en"
+            try:
+                self._reader = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=self.gpu)
+            except (TypeError, ValueError):
+                self._reader = PaddleOCR(use_angle_cls=True, lang=lang)
 
     def match_label(self, ocr_text: str) -> Tuple[Optional[str], float]:
         """Fuzzy-match OCR text against target labels."""
         return _best_match(ocr_text, self.target_labels, self.match_threshold)
 
-    # ----------------------------------------- mode 1: augment YOLO crops
+    def read_text(self, image: np.ndarray) -> str:
+        """Run OCR on a BGR image and return concatenated text."""
+        if image.size == 0:
+            return ""
+
+        if self._backend == "easyocr":
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            results = self._reader.readtext(gray, detail=1, paragraph=False)
+            texts = [r[1] for r in results if r[2] > 0.2]
+            return " ".join(texts)
+
+        result = self._reader.ocr(image)
+        entries = _parse_paddle_result(result)
+        texts = [text for _, text, conf in entries if conf > 0.2]
+        return " ".join(texts)
 
     def process_crop(
         self,
         frame: np.ndarray,
         x1: int, y1: int, x2: int, y2: int,
     ) -> Dict:
-        """
-        Crop, OCR, match — used when YOLO already provides bounding boxes.
-        """
+        """Crop, OCR, match — used when YOLO provides bounding boxes."""
         crop = frame[max(0, y1):y2, max(0, x1):x2]
         ocr_text = self.read_text(crop)
         matched_label, ratio = self.match_label(ocr_text)
-
         boost = self.confidence_boost if matched_label else 0.0
-
         return {
             "ocr_text": ocr_text,
             "ocr_matched_label": matched_label,
@@ -198,26 +175,29 @@ class OCRReader:
             "ocr_confidence_boost": boost,
         }
 
-    # ----------------------------------------- mode 2: full-frame OCR scan
-
     def scan_frame(self, frame: np.ndarray) -> list:
-        """
-        Run OCR on the entire frame.  For every text region whose content
-        fuzzy-matches a target label, return a Detection object.
-        """
+        """Run OCR on full frame; return list of Detection for text that matches target labels."""
         from src.logo_detector import Detection
 
         h, w = frame.shape[:2]
         frame_area = h * w
-        result = self._reader.ocr(frame)
-        raw_results = _parse_paddle_result(result)
+        raw_results: List[Tuple[list, str, float]] = []
+
+        if self._backend == "easyocr":
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            results = self._reader.readtext(gray, detail=1, paragraph=False)
+            for r in results:
+                bbox, text, conf = r[0], r[1], r[2]
+                raw_results.append((bbox, text, float(conf)))
+        else:
+            result = self._reader.ocr(frame)
+            raw_results = _parse_paddle_result(result)
 
         detections: list = []
 
         for bbox, text, ocr_conf in raw_results:
             if ocr_conf < 0.2:
                 continue
-
             matched_label, ratio = self.match_label(text)
             if matched_label is None:
                 continue
@@ -232,7 +212,6 @@ class OCRReader:
                 continue
 
             confidence = round(ocr_conf * ratio, 4)
-
             detections.append(Detection(
                 class_id=-1,
                 label=matched_label,

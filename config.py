@@ -23,6 +23,7 @@ class PipelineConfig:
     mode: str = "detect"
 
     # --- OCR ---
+    ocr_backend: str = "easyocr"  # "paddle" or "easyocr" (use easyocr if Paddle segfaults on CPU)
     target_labels: List[str] = field(default_factory=list)
     labels_file: str = ""  # path to a text file with one brand name per line
     ocr_languages: List[str] = field(default_factory=lambda: ["en"])
