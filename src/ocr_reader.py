@@ -11,9 +11,16 @@ Two operating modes:
 
 from __future__ import annotations
 
+import os
 import re
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
+
+# Prevent Intel MKL segfaults on CPU-only machines — must be set before
+# PaddlePaddle is imported anywhere.
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 import cv2
 import numpy as np
@@ -26,7 +33,10 @@ def _get_reader(lang: str, gpu: bool):
     global _reader
     if _reader is None:
         from paddleocr import PaddleOCR
-        _reader = PaddleOCR(use_angle_cls=True, lang=lang)
+        try:
+            _reader = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=gpu)
+        except (TypeError, ValueError):
+            _reader = PaddleOCR(use_angle_cls=True, lang=lang)
     return _reader
 
 
@@ -79,20 +89,55 @@ def _best_match(
 def _parse_paddle_result(result) -> List[Tuple[list, str, float]]:
     """
     Normalise PaddleOCR output into a flat list of (bbox, text, confidence).
-    PaddleOCR returns [page_results] where each page is a list of
-    (bbox, (text, conf)) tuples — or None if nothing was detected.
+
+    Handles multiple PaddleOCR output formats:
+      - Legacy: [[[(bbox, (text, conf)), ...], ...]]
+      - v3+:    [[(bbox, (text, conf)), ...]]  or  [None]
+      - v5:     may return dicts with 'rec_text', 'rec_score', 'dt_polys'
     """
     entries: List[Tuple[list, str, float]] = []
     if result is None:
         return entries
+
+    # v5+ dict-based output: list of dicts with 'rec_text', 'rec_score', etc.
+    if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+        for item in result:
+            text = item.get("rec_text", "") or item.get("text", "")
+            conf = float(item.get("rec_score", 0) or item.get("score", 0))
+            bbox = item.get("dt_polys", None) or item.get("boxes", None)
+            if text and bbox is not None:
+                if hasattr(bbox, "tolist"):
+                    bbox = bbox.tolist()
+                entries.append((bbox, text, conf))
+        return entries
+
+    # Legacy / v3 list-of-pages format
     for page in result:
         if page is None:
             continue
+        if isinstance(page, dict):
+            text = page.get("rec_text", "") or page.get("text", "")
+            conf = float(page.get("rec_score", 0) or page.get("score", 0))
+            bbox = page.get("dt_polys", None) or page.get("boxes", None)
+            if text and bbox is not None:
+                if hasattr(bbox, "tolist"):
+                    bbox = bbox.tolist()
+                entries.append((bbox, text, conf))
+            continue
         for item in page:
-            bbox = item[0]           # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-            text = item[1][0]        # str
-            conf = float(item[1][1]) # float
-            entries.append((bbox, text, conf))
+            if isinstance(item, dict):
+                text = item.get("rec_text", "") or item.get("text", "")
+                conf = float(item.get("rec_score", 0) or item.get("score", 0))
+                bbox = item.get("dt_polys", None) or item.get("boxes", None)
+                if text and bbox is not None:
+                    if hasattr(bbox, "tolist"):
+                        bbox = bbox.tolist()
+                    entries.append((bbox, text, conf))
+            else:
+                bbox = item[0]
+                text = item[1][0]
+                conf = float(item[1][1])
+                entries.append((bbox, text, conf))
     return entries
 
 
@@ -121,7 +166,7 @@ class OCRReader:
         """Run OCR on a BGR image and return the concatenated text."""
         if image.size == 0:
             return ""
-        result = self._reader.ocr(image, cls=True)
+        result = self._reader.ocr(image)
         entries = _parse_paddle_result(result)
         texts = [text for _, text, conf in entries if conf > 0.2]
         return " ".join(texts)
