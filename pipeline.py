@@ -193,6 +193,9 @@ def run_pipeline(
             img_size=config.img_size,
             exclusion_coverage=config.ocr_exclusion_coverage,
             brand_filter=det_brand_names,
+            patch_scales=config.clip_patch_scales,
+            stride_ratio=config.clip_stride_ratio,
+            refine=config.clip_refine,
         )
     elif use_detect:
         from src.logo_detector import LogoDetector
@@ -505,6 +508,10 @@ Examples:
     parser.add_argument("--no-frames", action="store_true", help="Skip saving annotated frames")
     parser.add_argument("--no-crops", action="store_true", help="Skip saving cropped logos")
     parser.add_argument(
+        "--fast", action="store_true",
+        help="Faster run: fewer CLIP patches, no refinement, skip saving frames/crops (~0.5s/frame target)",
+    )
+    parser.add_argument(
         "--detector", default="yolo",
         choices=["yolo", "reference"],
         help="Detection backend (default: yolo)",
@@ -521,6 +528,12 @@ Examples:
                            help="Min cosine similarity for a reference match (default: 0.75)")
     ref_group.add_argument("--ocr-exclusion-coverage", type=float, default=1.0,
                            help="Skip CLIP patches overlapping OCR hits by this fraction (default: 0.3)")
+    ref_group.add_argument("--clip-patch-scales", type=int, nargs="*", default=None,
+                           help="CLIP patch scales in px (default: 96 256). More scales = slower.")
+    ref_group.add_argument("--clip-stride-ratio", type=float, default=None,
+                           help="CLIP stride as fraction of scale (default: 0.65). Lower = more patches, slower.")
+    ref_group.add_argument("--clip-refine", action="store_true",
+                           help="Refine detection boxes (slower, slightly more accurate)")
 
     label_group = parser.add_argument_group("Label / OCR options")
     label_group.add_argument(
@@ -560,6 +573,10 @@ Examples:
 
     target_labels = [l.strip() for l in args.labels.split(",") if l.strip()] if args.labels else []
 
+    clip_scales = args.clip_patch_scales if args.clip_patch_scales is not None else [96, 256]
+    clip_stride = args.clip_stride_ratio if args.clip_stride_ratio is not None else 0.65
+    clip_refine = args.clip_refine and not args.fast
+
     config = PipelineConfig(
         input_path=args.input,
         mode=args.mode,
@@ -570,8 +587,8 @@ Examples:
         img_size=args.img_size,
         device=args.device,
         output_dir=args.output,
-        save_annotated_frames=not args.no_frames,
-        save_cropped_logos=not args.no_crops,
+        save_annotated_frames=not (args.no_frames or args.fast),
+        save_cropped_logos=not (args.no_crops or args.fast),
         target_labels=target_labels,
         labels_file=args.labels_file,
         ocr_backend=args.ocr_backend,
@@ -587,6 +604,9 @@ Examples:
         clip_pretrained=args.clip_pretrained,
         similarity_threshold=args.similarity_threshold,
         ocr_exclusion_coverage=args.ocr_exclusion_coverage,
+        clip_patch_scales=clip_scales,
+        clip_stride_ratio=clip_stride,
+        clip_refine=clip_refine,
     )
 
     try:

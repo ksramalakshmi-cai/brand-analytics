@@ -99,6 +99,10 @@ class PipelineConfig:
     clip_pretrained: str = "openai"       # pretrained weights tag
     similarity_threshold: float = 0.75   # min cosine similarity to count as a match
     ocr_exclusion_coverage: float = 0.3  # skip CLIP patches that overlap OCR hits by this fraction
+    # Speed vs quality: fewer scales + larger stride + no refine ≈ faster (e.g. ~0.5s/frame target)
+    clip_patch_scales: List[int] = field(default_factory=lambda: [96, 256])
+    clip_stride_ratio: float = 0.65
+    clip_refine: bool = False
 
     # --- OCR ---
     # "easyocr" | "paddle" | "deepseek"
