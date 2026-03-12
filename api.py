@@ -300,6 +300,8 @@ def get_stats(logo_ids: Optional[str] = None):
                 "avg_visibility_pct": r["avg_visibility_pct"],
                 "avg_confidence": r["avg_confidence"],
                 "avg_area_pct": r["avg_area_pct"],
+                "avg_fcs_score": r.get("avg_fcs_score", 0),
+                "total_play_count": r.get("total_play_count", 0),
                 "total_engagements": r["total_engagements"],
                 "weighted_visibility_score": r["weighted_visibility_score"],
             },

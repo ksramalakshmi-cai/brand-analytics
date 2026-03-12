@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _DB_PATH = os.getenv("BA_DB_PATH", "brand_analytics.db")
+PROMINENCE_WEIGHT = 0.35
+FREQUENCY_WEIGHT = 0.15
+DURATION_WEIGHT = 0.2
+QUALITY_WEIGHT = 0.3
 
 
 @contextmanager
@@ -102,11 +106,51 @@ def init_db():
                 avg_visibility_pct REAL DEFAULT 0,
                 avg_confidence REAL DEFAULT 0,
                 avg_area_pct REAL DEFAULT 0,
+                avg_fcs_score REAL DEFAULT 0,
+                total_play_count INTEGER DEFAULT 0,
                 total_engagements INTEGER DEFAULT 0,
                 weighted_visibility_score REAL DEFAULT 0,
                 updated_at TEXT DEFAULT (datetime('now'))
             );
         """)
+        # Backward-compatible migrations for existing DBs.
+        _ensure_column(conn, "logo_stats", "avg_fcs_score", "REAL DEFAULT 0")
+        _ensure_column(conn, "logo_stats", "total_play_count", "INTEGER DEFAULT 0")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, col_def: str) -> None:
+    """Best-effort SQLite schema migration helper."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+    except sqlite3.OperationalError as exc:
+        # Ignore "duplicate column name" and keep going.
+        if "duplicate column name" not in str(exc).lower():
+            raise
+
+
+def _safe_div(num: float, den: float) -> float:
+    return num / den if den and den > 0 else 0.0
+
+
+def _fcs_breakdown(
+    roi_duration: float,
+    object_presence_duration: float,
+    max_objects: int,
+    total_duration: float,
+) -> Dict[str, float]:
+    """Compute requested weightages + total FCS score."""
+    prominence = PROMINENCE_WEIGHT * _safe_div(roi_duration, object_presence_duration)
+    frequency = FREQUENCY_WEIGHT * _safe_div(max_objects, 5.0)
+    duration = DURATION_WEIGHT * _safe_div(roi_duration, total_duration)
+    quality = QUALITY_WEIGHT
+    total = prominence + frequency + duration + quality
+    return {
+        "prominence_weightage": round(prominence, 6),
+        "frequency_weightage": round(frequency, 6),
+        "duration_weightage": round(duration, 6),
+        "quality_weightage": round(quality, 6),
+        "fcs_score": round(total, 6),
+    }
 
 
 # ── Logo CRUD ─────────────────────────────────────────────────────────────
@@ -250,6 +294,7 @@ def recompute_logo_stats(logo_id: str) -> None:
 
         total_videos = len(jobs)
         total_engagements = sum(r["engagements"] or 0 for r in jobs)
+        total_play_count = total_engagements
 
         agg = conn.execute("""
             SELECT COUNT(*) AS cnt,
@@ -265,6 +310,7 @@ def recompute_logo_stats(logo_id: str) -> None:
         total_screen_time = 0.0
         visibility_pcts: list = []
         weighted_vis = 0.0
+        fcs_scores: List[float] = []
 
         for j in jobs:
             dur = j["duration_sec"] or 0
@@ -277,6 +323,23 @@ def recompute_logo_stats(logo_id: str) -> None:
                 (j["job_id"], logo_id),
             ).fetchone()["c"]
 
+            ts_row = conn.execute(
+                "SELECT MIN(timestamp_sec) AS min_ts, MAX(timestamp_sec) AS max_ts "
+                "FROM detections WHERE job_id = ? AND logo_id = ?",
+                (j["job_id"], logo_id),
+            ).fetchone()
+            min_ts = ts_row["min_ts"]
+            max_ts = ts_row["max_ts"]
+
+            max_objs_row = conn.execute(
+                "SELECT MAX(c) AS max_objects FROM ("
+                "  SELECT COUNT(*) AS c FROM detections "
+                "  WHERE job_id = ? AND logo_id = ? GROUP BY frame_number"
+                ")",
+                (j["job_id"], logo_id),
+            ).fetchone()
+            max_objects = int(max_objs_row["max_objects"] or 0)
+
             if fa > 0 and dur > 0:
                 interval = dur / fa
                 st = fc * interval
@@ -285,16 +348,29 @@ def recompute_logo_stats(logo_id: str) -> None:
                 visibility_pcts.append(vis_pct)
                 weighted_vis += vis_pct * eng
 
+                if min_ts is not None and max_ts is not None:
+                    object_presence_duration = max(0.0, float(max_ts) - float(min_ts) + interval)
+                else:
+                    object_presence_duration = 0.0
+                fcs = _fcs_breakdown(
+                    roi_duration=st,
+                    object_presence_duration=object_presence_duration,
+                    max_objects=max_objects,
+                    total_duration=dur,
+                )["fcs_score"]
+                fcs_scores.append(fcs)
+
         avg_st = (total_screen_time / total_videos) if total_videos else 0
         avg_vis = (sum(visibility_pcts) / len(visibility_pcts)) if visibility_pcts else 0
+        avg_fcs = (sum(fcs_scores) / len(fcs_scores)) if fcs_scores else 0
 
         conn.execute("""
             INSERT INTO logo_stats
                 (logo_id, total_videos, total_detections, total_screen_time_sec,
                  avg_screen_time_per_video_sec, avg_visibility_pct,
-                 avg_confidence, avg_area_pct,
-                 total_engagements, weighted_visibility_score, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
+                 avg_confidence, avg_area_pct, avg_fcs_score,
+                 total_play_count, total_engagements, weighted_visibility_score, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
             ON CONFLICT(logo_id) DO UPDATE SET
                 total_videos=excluded.total_videos,
                 total_detections=excluded.total_detections,
@@ -303,13 +379,16 @@ def recompute_logo_stats(logo_id: str) -> None:
                 avg_visibility_pct=excluded.avg_visibility_pct,
                 avg_confidence=excluded.avg_confidence,
                 avg_area_pct=excluded.avg_area_pct,
+                avg_fcs_score=excluded.avg_fcs_score,
+                total_play_count=excluded.total_play_count,
                 total_engagements=excluded.total_engagements,
                 weighted_visibility_score=excluded.weighted_visibility_score,
                 updated_at=excluded.updated_at
         """, (
             logo_id, total_videos, total_detections, round(total_screen_time, 2),
             round(avg_st, 2), round(avg_vis, 2),
-            avg_confidence, avg_area_pct,
+            avg_confidence, avg_area_pct, round(avg_fcs, 6),
+            int(total_play_count),
             total_engagements, round(weighted_vis, 4),
         ))
 
@@ -358,6 +437,33 @@ def get_per_video_breakdown(logo_id: str) -> List[Dict[str, Any]]:
             st = round(fc * interval, 2)
             vis = round(st / dur * 100, 2) if dur else 0
 
+            ts_row = conn.execute(
+                "SELECT MIN(timestamp_sec) AS min_ts, MAX(timestamp_sec) AS max_ts "
+                "FROM detections WHERE job_id = ? AND logo_id = ?",
+                (j["job_id"], logo_id),
+            ).fetchone()
+            min_ts = ts_row["min_ts"]
+            max_ts = ts_row["max_ts"]
+            object_presence_duration = (
+                max(0.0, float(max_ts) - float(min_ts) + interval)
+                if min_ts is not None and max_ts is not None else 0.0
+            )
+
+            max_objs_row = conn.execute(
+                "SELECT MAX(c) AS max_objects FROM ("
+                "  SELECT COUNT(*) AS c FROM detections "
+                "  WHERE job_id = ? AND logo_id = ? GROUP BY frame_number"
+                ")",
+                (j["job_id"], logo_id),
+            ).fetchone()
+            max_objects = int(max_objs_row["max_objects"] or 0)
+            fcs = _fcs_breakdown(
+                roi_duration=st,
+                object_presence_duration=object_presence_duration,
+                max_objects=max_objects,
+                total_duration=dur,
+            )
+
             breakdown.append({
                 "video_id": j["video_id"],
                 "job_id": j["job_id"],
@@ -368,5 +474,13 @@ def get_per_video_breakdown(logo_id: str) -> List[Dict[str, Any]]:
                 "avg_confidence": round(agg["avg_conf"] or 0, 4),
                 "avg_area_pct": round(agg["avg_area"] or 0, 2),
                 "engagements": j["engagements"] or 0,
+                "play_count": j["engagements"] or 0,
+                "metric_inputs": {
+                    "roi_duration": round(st, 4),
+                    "object_presence_duration": round(object_presence_duration, 4),
+                    "max_objects": max_objects,
+                    "total_duration": round(float(dur), 4),
+                },
+                "fcs_breakdown": fcs,
             })
         return breakdown

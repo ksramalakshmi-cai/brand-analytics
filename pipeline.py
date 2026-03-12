@@ -346,6 +346,9 @@ def run_pipeline(
         (frames_with_target_brands / estimated_frames) * 100, 2
     ) if estimated_frames else 0.0
 
+    def _safe_div(num: float, den: float) -> float:
+        return num / den if den and den > 0 else 0.0
+
     brands_result = {}
     for label, s in display_summaries.items():
         vis_pct = (
@@ -368,6 +371,24 @@ def run_pipeline(
                 source = "+".join(sorted(source_tokens))
         else:
             source = "unknown"
+        frame_counts = {}
+        for r in label_records:
+            frame_counts[r.frame_index] = frame_counts.get(r.frame_index, 0) + 1
+        max_objects = max(frame_counts.values()) if frame_counts else 0
+        roi_duration = float(s.total_screen_time_sec)
+        total_duration = float(media.duration_sec) if media.duration_sec > 0 else roi_duration
+        if label_records and config.fps > 0:
+            tmin = min(r.timestamp_sec for r in label_records)
+            tmax = max(r.timestamp_sec for r in label_records)
+            object_presence_duration = max(0.0, (tmax - tmin) + (1.0 / config.fps))
+        else:
+            object_presence_duration = 0.0
+
+        prominence_weightage = 0.35 * _safe_div(roi_duration, object_presence_duration)
+        frequency_weightage = 0.15 * _safe_div(float(max_objects), 5.0)
+        duration_weightage = 0.2 * _safe_div(roi_duration, total_duration)
+        quality_weightage = 0.3
+        fcs_score = prominence_weightage + frequency_weightage + duration_weightage + quality_weightage
         brands_result[label] = {
             "label": label,
             "source": source,
@@ -385,6 +406,19 @@ def run_pipeline(
             "timestamps_visible": s.timestamps_visible,
             "first_seen_timestamp_sec": s.timestamps_visible[0] if s.timestamps_visible else None,
             "last_seen_timestamp_sec": s.timestamps_visible[-1] if s.timestamps_visible else None,
+            "metric_inputs": {
+                "roi_duration": round(roi_duration, 4),
+                "object_presence_duration": round(object_presence_duration, 4),
+                "max_objects": max_objects,
+                "total_duration": round(total_duration, 4),
+            },
+            "fcs_breakdown": {
+                "prominence_weightage": round(prominence_weightage, 6),
+                "frequency_weightage": round(frequency_weightage, 6),
+                "duration_weightage": round(duration_weightage, 6),
+                "quality_weightage": round(quality_weightage, 6),
+                "fcs_score": round(fcs_score, 6),
+            },
         }
 
     detection_details = [
