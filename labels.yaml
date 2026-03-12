@@ -1,24 +1,14 @@
-# Brand detection method assignments
-# -----------------------------------
-# Per brand, choose which method has priority:
-#   ocr      — OCR is primary (text-heavy logos, brand names in clear text)
-#   detector — CLIP/YOLO is primary (visual/graphical logos, icons)
-#   both     — use both OCR and detector (recommended when unsure)
-#
-# Usage:
-#   python pipeline.py --input video.mp4 --mode both \
-#       --detector reference --logos-dir logos/ --labels-file labels.yaml
-
-google: ocr
-coca cola: ocr
-budweiser: both
-toyota: detector
-hyundai: detector
-emirates: detector
-aramco: detector
-dp world: ocr
+google: both
+# coca cola: both
+# budweiser: both
+# toyota: detector
+hyundai: both
+emirates: both
+aramco: both
+dpworld: both
 sobha: both
-flipkart: ocr
-royal stag: ocr
-apollo: both
-livpure: ocr
+# flipkart: both
+royalstag: both
+# apollo: both
+# livpure: both
+marriot: both

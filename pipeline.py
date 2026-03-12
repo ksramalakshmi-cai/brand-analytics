@@ -543,7 +543,7 @@ Examples:
     parser.add_argument("--no-crops", action="store_true", help="Skip saving cropped logos")
     parser.add_argument(
         "--fast", action="store_true",
-        help="Faster run: fewer CLIP patches, no refinement, skip saving frames/crops (~0.5s/frame target)",
+        help="Faster run: fewer CLIP patches, no refinement (~0.5s/frame target). Frames/crops still saved unless --no-frames/--no-crops.",
     )
     parser.add_argument(
         "--detector", default="yolo",
@@ -621,8 +621,8 @@ Examples:
         img_size=args.img_size,
         device=args.device,
         output_dir=args.output,
-        save_annotated_frames=not (args.no_frames or args.fast),
-        save_cropped_logos=not (args.no_crops or args.fast),
+        save_annotated_frames=not args.no_frames,
+        save_cropped_logos=not args.no_crops,
         target_labels=target_labels,
         labels_file=args.labels_file,
         ocr_backend=args.ocr_backend,
