@@ -331,7 +331,8 @@ def run_pipeline(
 
     matched = {l.lower() for l in display_summaries}
     missing = [t for t in all_labels if t.lower() not in matched] if all_labels else []
-    target_lower = {t.lower() for t in all_labels} if all_labels else set()
+    if not all_labels:
+        target_lower = set()
 
     filtered_records = [
         r for r in tracker.records
