@@ -26,7 +26,7 @@ def _get_reader(lang: str, gpu: bool):
     global _reader
     if _reader is None:
         from paddleocr import PaddleOCR
-        _reader = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=gpu, show_log=False)
+        _reader = PaddleOCR(use_angle_cls=True, lang=lang)
     return _reader
 
 
@@ -164,7 +164,7 @@ class OCRReader:
 
         h, w = frame.shape[:2]
         frame_area = h * w
-        result = self._reader.ocr(frame, cls=True)
+        result = self._reader.ocr(frame)
         raw_results = _parse_paddle_result(result)
 
         detections: list = []

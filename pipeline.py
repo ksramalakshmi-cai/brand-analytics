@@ -278,10 +278,10 @@ Examples:
     )
     parser.add_argument("--model", "-m", default="yolov8n.pt", help="YOLO model weights (default: yolov8n.pt)")
     parser.add_argument("--fps", type=float, default=5.0, help="Frames per second to sample (default: 5.0)")
-    parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold (default: 0.25)")
+    parser.add_argument("--conf", type=float, default=0.8, help="Confidence threshold (default: 0.25)")
     parser.add_argument("--iou", type=float, default=0.45, help="IoU threshold for NMS (default: 0.45)")
     parser.add_argument("--img-size", type=int, default=640, help="Inference image size (default: 640)")
-    parser.add_argument("--device", default="", help="Device: 'cpu', '0', 'cuda:0', etc. (default: auto)")
+    parser.add_argument("--device", default="cuda", help="Device: 'cpu', '0', 'cuda:0', etc. (default: auto)")
     parser.add_argument("--output", "-o", default="outputs", help="Output directory (default: outputs/)")
     parser.add_argument("--no-frames", action="store_true", help="Skip saving annotated frames")
     parser.add_argument("--no-crops", action="store_true", help="Skip saving cropped logos")
@@ -300,7 +300,7 @@ Examples:
         help="OCR language(s), comma-separated (default: en)",
     )
     label_group.add_argument(
-        "--ocr-match-threshold", type=float, default=0.5,
+        "--ocr-match-threshold", type=float, default=0.8,
         help="Min fuzzy-match ratio to count as brand match (default: 0.5)",
     )
     label_group.add_argument(
