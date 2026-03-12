@@ -77,6 +77,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
 
     use_detect = mode in ("detect", "both")
     use_ocr = mode in ("ocr", "both")
+    use_rekog = config.detector.startswith("rekognition")
 
     if use_ocr and not target_labels:
         print("[ERROR] OCR mode requires target labels. Use --labels or --labels-file.")
@@ -94,8 +95,13 @@ def run_pipeline(config: PipelineConfig) -> dict:
         print(f"  Native FPS : {media.native_fps:.2f}")
         print(f"  Total Frms : {media.total_frames}")
     print(f"  Mode       : {mode}")
-    if use_detect:
+    print(f"  Detector   : {config.detector}")
+    if use_detect and not use_rekog:
         print(f"  Model      : {config.model_path}")
+    if use_rekog:
+        print(f"  Rekog region: {config.rekognition_region}")
+        if config.rekognition_project_arn:
+            print(f"  Rekog ARN  : {config.rekognition_project_arn}")
     print(f"  Sample FPS : {config.fps}")
     if target_labels:
         print(f"  Labels     : {len(target_labels)} brands")
@@ -108,7 +114,18 @@ def run_pipeline(config: PipelineConfig) -> dict:
 
     # ---- Init components (only what's needed) ----
     detector = None
-    if use_detect:
+    if use_rekog:
+        from src.rekognition_detector import RekognitionDetector
+        rekog_mode = "custom" if config.detector == "rekognition-custom" else "labels"
+        detector = RekognitionDetector(
+            mode=rekog_mode,
+            project_version_arn=config.rekognition_project_arn or None,
+            target_labels=target_labels or None,
+            confidence_threshold=config.confidence_threshold,
+            region=config.rekognition_region,
+            aws_profile=config.rekognition_aws_profile or None,
+        )
+    elif use_detect:
         from src.logo_detector import LogoDetector
         detector = LogoDetector(config)
 
@@ -147,15 +164,14 @@ def run_pipeline(config: PipelineConfig) -> dict:
     ):
         detections: List[Detection] = []
 
-        if mode == "detect":
-            detections = detector.detect(frame_meta.frame)
-
-        elif mode == "ocr":
+        if mode == "ocr":
             detections = ocr_reader.scan_frame(frame_meta.frame)
             ocr_match_count += len(detections)
 
-        elif mode == "both":
+        elif mode in ("detect", "both") and detector is not None:
             detections = detector.detect(frame_meta.frame)
+
+        if mode == "both" and detector is not None:
             for det in detections:
                 ocr_result = ocr_reader.process_crop(
                     frame_meta.frame,
@@ -285,13 +301,26 @@ Examples:
     )
     parser.add_argument("--model", "-m", default="yolov8n.pt", help="YOLO model weights (default: yolov8n.pt)")
     parser.add_argument("--fps", type=float, default=5.0, help="Frames per second to sample (default: 5.0)")
-    parser.add_argument("--conf", type=float, default=0.8, help="Confidence threshold (default: 0.25)")
+    parser.add_argument("--conf", type=float, default=0.8, help="Confidence threshold (default: 0.8)")
     parser.add_argument("--iou", type=float, default=0.45, help="IoU threshold for NMS (default: 0.45)")
     parser.add_argument("--img-size", type=int, default=640, help="Inference image size (default: 640)")
-    parser.add_argument("--device", default="cuda", help="Device: 'cpu', '0', 'cuda:0', etc. (default: auto)")
+    parser.add_argument("--device", default="", help="Device: 'cpu', '0', 'cuda:0', etc. (default: auto)")
     parser.add_argument("--output", "-o", default="outputs", help="Output directory (default: outputs/)")
     parser.add_argument("--no-frames", action="store_true", help="Skip saving annotated frames")
     parser.add_argument("--no-crops", action="store_true", help="Skip saving cropped logos")
+    parser.add_argument(
+        "--detector", default="yolo",
+        choices=["yolo", "rekognition-labels", "rekognition-custom"],
+        help="Detection backend (default: yolo)",
+    )
+
+    rekog_group = parser.add_argument_group("Rekognition options")
+    rekog_group.add_argument("--rekognition-arn", type=str, default="",
+                             help="Project version ARN for rekognition-custom mode")
+    rekog_group.add_argument("--rekognition-region", type=str, default="us-east-1",
+                             help="AWS region (default: us-east-1)")
+    rekog_group.add_argument("--aws-profile", type=str, default="",
+                             help="AWS credentials profile name (optional)")
 
     label_group = parser.add_argument_group("Label / OCR options")
     label_group.add_argument(
@@ -341,6 +370,10 @@ Examples:
         ocr_languages=[l.strip() for l in args.ocr_lang.split(",")],
         ocr_match_threshold=args.ocr_match_threshold,
         ocr_confidence_boost=args.ocr_boost,
+        detector=args.detector,
+        rekognition_project_arn=args.rekognition_arn,
+        rekognition_region=args.rekognition_region,
+        rekognition_aws_profile=args.aws_profile,
     )
 
     run_pipeline(config)

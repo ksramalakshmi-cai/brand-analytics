@@ -19,8 +19,22 @@ class PipelineConfig:
     img_size: int = 640  # inference resolution (model rescales internally)
 
     # --- Mode ---
-    # "detect" = YOLO only, "ocr" = OCR only (no model needed), "both" = YOLO + OCR
+    # "detect"  = YOLO only
+    # "ocr"     = OCR only (no model needed)
+    # "both"    = YOLO + OCR
+    # "rekog"   = Amazon Rekognition (detect_labels or custom_labels)
     mode: str = "detect"
+
+    # --- Detector backend ---
+    # "yolo"               = local YOLOv8 model (default)
+    # "rekognition-labels" = AWS Rekognition DetectLabels
+    # "rekognition-custom" = AWS Rekognition DetectCustomLabels (trained project)
+    detector: str = "yolo"
+
+    # --- Rekognition ---
+    rekognition_project_arn: str = ""   # required for rekognition-custom
+    rekognition_region: str = "us-east-1"
+    rekognition_aws_profile: str = ""   # optional; uses default credential chain if empty
 
     # --- OCR ---
     ocr_backend: str = "easyocr"  # "paddle" or "easyocr" (use easyocr if Paddle segfaults on CPU)
