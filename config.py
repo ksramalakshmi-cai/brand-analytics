@@ -34,6 +34,7 @@ class PipelineConfig:
     clip_model: str = "ViT-B-32"         # open_clip model architecture
     clip_pretrained: str = "openai"       # pretrained weights tag
     similarity_threshold: float = 0.75   # min cosine similarity to count as a match
+    ocr_exclusion_coverage: float = 0.3  # skip CLIP patches that overlap OCR hits by this fraction
 
     # --- OCR ---
     ocr_backend: str = "easyocr"  # "paddle" or "easyocr" (use easyocr if Paddle segfaults on CPU)

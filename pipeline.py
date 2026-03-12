@@ -137,6 +137,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
             similarity_threshold=config.similarity_threshold,
             device=config.device,
             img_size=config.img_size,
+            exclusion_coverage=config.ocr_exclusion_coverage,
         )
     elif use_detect:
         from src.logo_detector import LogoDetector
@@ -178,13 +179,26 @@ def run_pipeline(config: PipelineConfig) -> dict:
         detections: List[Detection] = []
 
         if mode == "ocr":
+            # OCR-only: scan full frame for text brands
             detections = ocr_reader.scan_frame(frame_meta.frame)
             ocr_match_count += len(detections)
 
-        elif mode in ("detect", "both") and detector is not None:
-            detections = detector.detect(frame_meta.frame)
+        elif mode == "both" and use_reference and detector is not None:
+            # OCR-first strategy: OCR scans full frame, CLIP fills the gaps
+            ocr_dets = ocr_reader.scan_frame(frame_meta.frame)
+            ocr_match_count += len(ocr_dets)
 
-        if mode == "both" and detector is not None:
+            exclusion_zones = [
+                (d.x1, d.y1, d.x2, d.y2) for d in ocr_dets
+            ]
+            clip_dets = detector.detect(
+                frame_meta.frame, exclusion_zones=exclusion_zones,
+            )
+            detections = ocr_dets + clip_dets
+
+        elif mode == "both" and not use_reference and detector is not None:
+            # YOLO + OCR verify: detector first, OCR boosts matches
+            detections = detector.detect(frame_meta.frame)
             for det in detections:
                 ocr_result = ocr_reader.process_crop(
                     frame_meta.frame,
@@ -200,6 +214,9 @@ def run_pipeline(config: PipelineConfig) -> dict:
                     det.label = det.ocr_matched_label
                     ocr_match_count += 1
 
+        elif mode == "detect" and detector is not None:
+            detections = detector.detect(frame_meta.frame)
+
         detection_count += len(detections)
 
         tracker.add(
@@ -210,8 +227,8 @@ def run_pipeline(config: PipelineConfig) -> dict:
             frame_height=frame_meta.height,
         )
 
-        # For visualization, only include OCR-matched detections (not raw YOLO classes)
-        if mode == "both":
+        # Visualization: for YOLO+OCR mode show only OCR-matched; otherwise all
+        if mode == "both" and not use_reference:
             vis_detections = [d for d in detections if d.ocr_matched_label]
         else:
             vis_detections = detections
@@ -336,6 +353,8 @@ Examples:
                            help="CLIP pretrained weights tag (default: openai)")
     ref_group.add_argument("--similarity-threshold", type=float, default=0.75,
                            help="Min cosine similarity for a reference match (default: 0.75)")
+    ref_group.add_argument("--ocr-exclusion-coverage", type=float, default=1.0,
+                           help="Skip CLIP patches overlapping OCR hits by this fraction (default: 0.3)")
 
     label_group = parser.add_argument_group("Label / OCR options")
     label_group.add_argument(
@@ -390,6 +409,7 @@ Examples:
         clip_model=args.clip_model,
         clip_pretrained=args.clip_pretrained,
         similarity_threshold=args.similarity_threshold,
+        ocr_exclusion_coverage=args.ocr_exclusion_coverage,
     )
 
     run_pipeline(config)

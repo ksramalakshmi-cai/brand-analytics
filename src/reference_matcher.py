@@ -33,11 +33,17 @@ from src.logo_detector import Detection
 _CUDA_AVAILABLE = torch.cuda.is_available()
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 
+Box = Tuple[int, int, int, int]
+
 
 class ReferenceMatcher:
     """
     Detects logos by comparing multi-scale frame patches against
     pre-computed CLIP embeddings of reference images.
+
+    Supports *exclusion zones*: when OCR has already found brands in
+    certain frame regions, those areas can be skipped to avoid
+    duplicate work and give OCR priority.
     """
 
     def __init__(
@@ -52,15 +58,19 @@ class ReferenceMatcher:
         stride_ratio: float = 0.5,
         batch_size: int = 64,
         nms_iou: float = 0.45,
+        exclusion_coverage: float = 0.3,
+        refine: bool = True,
     ):
         import open_clip
 
         self.similarity_threshold = similarity_threshold
         self.img_size = img_size
-        self.patch_scales = patch_scales or [64, 128, 256, 384]
+        self.patch_scales = patch_scales or [48, 96, 160, 256]
         self.stride_ratio = stride_ratio
         self.batch_size = batch_size
         self.nms_iou = nms_iou
+        self.exclusion_coverage = exclusion_coverage
+        self.refine = refine
 
         if device:
             self.device = torch.device(device)
@@ -137,19 +147,68 @@ class ReferenceMatcher:
         return F.normalize(emb.squeeze(0), dim=-1)
 
     # --------------------------------------------------------------------- #
-    # Multi-scale patch extraction                                            #
+    # Geometry helpers                                                        #
     # --------------------------------------------------------------------- #
 
     @staticmethod
+    def _intersection_area(a: Box, b: Box) -> int:
+        ix1 = max(a[0], b[0])
+        iy1 = max(a[1], b[1])
+        ix2 = min(a[2], b[2])
+        iy2 = min(a[3], b[3])
+        return max(0, ix2 - ix1) * max(0, iy2 - iy1)
+
+    @staticmethod
+    def _box_area(b: Box) -> int:
+        return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+
+    @classmethod
+    def _is_covered(
+        cls,
+        patch_box: Box,
+        exclusion_zones: List[Box],
+        coverage_threshold: float,
+    ) -> bool:
+        """True if the patch is sufficiently covered by any exclusion zone."""
+        patch_area = cls._box_area(patch_box)
+        if patch_area <= 0:
+            return True
+        for zone in exclusion_zones:
+            inter = cls._intersection_area(patch_box, zone)
+            if inter / patch_area >= coverage_threshold:
+                return True
+        return False
+
+    @staticmethod
+    def _iou(a: Box, b: Box) -> float:
+        ix1 = max(a[0], b[0])
+        iy1 = max(a[1], b[1])
+        ix2 = min(a[2], b[2])
+        iy2 = min(a[3], b[3])
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        area_a = (a[2] - a[0]) * (a[3] - a[1])
+        area_b = (b[2] - b[0]) * (b[3] - b[1])
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    # --------------------------------------------------------------------- #
+    # Multi-scale patch extraction                                            #
+    # --------------------------------------------------------------------- #
+
+    @classmethod
     def _extract_patches(
+        cls,
         frame: np.ndarray,
         scales: List[int],
         stride_ratio: float,
-    ) -> Tuple[List[np.ndarray], List[Tuple[int, int, int, int]]]:
-        """Return (crops, boxes) where boxes are in original frame coords."""
+        exclusion_zones: Optional[List[Box]] = None,
+        coverage_threshold: float = 0.3,
+    ) -> Tuple[List[np.ndarray], List[Box]]:
+        """Return (crops, boxes) where boxes are in frame coords.
+        Patches overlapping exclusion zones are skipped."""
         h, w = frame.shape[:2]
         crops: List[np.ndarray] = []
-        boxes: List[Tuple[int, int, int, int]] = []
+        boxes: List[Box] = []
 
         for scale in scales:
             if scale > min(h, w):
@@ -157,8 +216,13 @@ class ReferenceMatcher:
             stride = max(1, int(scale * stride_ratio))
             for y in range(0, h - scale + 1, stride):
                 for x in range(0, w - scale + 1, stride):
+                    box: Box = (x, y, x + scale, y + scale)
+                    if exclusion_zones and cls._is_covered(
+                        box, exclusion_zones, coverage_threshold
+                    ):
+                        continue
                     crops.append(frame[y : y + scale, x : x + scale])
-                    boxes.append((x, y, x + scale, y + scale))
+                    boxes.append(box)
 
         return crops, boxes
 
@@ -193,7 +257,7 @@ class ReferenceMatcher:
 
     @staticmethod
     def _nms(
-        boxes: List[Tuple[int, int, int, int]],
+        boxes: List[Box],
         scores: List[float],
         labels: List[int],
         iou_threshold: float,
@@ -233,13 +297,81 @@ class ReferenceMatcher:
         return keep
 
     # --------------------------------------------------------------------- #
+    # Bbox refinement — zoom in on coarse matches for tighter boxes          #
+    # --------------------------------------------------------------------- #
+
+    def _refine_box(
+        self,
+        proc_frame: np.ndarray,
+        coarse_box: Box,
+        brand_idx: int,
+        coarse_score: float,
+    ) -> Tuple[Box, float]:
+        """
+        Given a coarse patch match, search within a local window using
+        smaller patches to tighten the bounding box.
+        """
+        h, w = proc_frame.shape[:2]
+        cx1, cy1, cx2, cy2 = coarse_box
+        coarse_size = max(cx2 - cx1, cy2 - cy1)
+
+        if coarse_size <= 48:
+            return coarse_box, coarse_score
+
+        pad = coarse_size // 4
+        rx1 = max(0, cx1 - pad)
+        ry1 = max(0, cy1 - pad)
+        rx2 = min(w, cx2 + pad)
+        ry2 = min(h, cy2 + pad)
+        region = proc_frame[ry1:ry2, rx1:rx2]
+
+        fine_scales = [s for s in [coarse_size // 3, coarse_size // 2] if s >= 24]
+        if not fine_scales:
+            return coarse_box, coarse_score
+
+        fine_stride = max(1, fine_scales[0] // 3)
+        rh, rw = region.shape[:2]
+        fine_crops: List[np.ndarray] = []
+        fine_boxes: List[Box] = []
+
+        for scale in fine_scales:
+            if scale > min(rh, rw):
+                continue
+            for y in range(0, rh - scale + 1, fine_stride):
+                for x in range(0, rw - scale + 1, fine_stride):
+                    fine_crops.append(region[y : y + scale, x : x + scale])
+                    fine_boxes.append((rx1 + x, ry1 + y, rx1 + x + scale, ry1 + y + scale))
+
+        if not fine_crops:
+            return coarse_box, coarse_score
+
+        fine_embs = self._embed_crops(fine_crops)
+        brand_emb = self.brand_embeddings[brand_idx].unsqueeze(0)  # (1, D)
+        sims = (fine_embs @ brand_emb.T).squeeze(-1)  # (N,)
+
+        best_idx = int(sims.argmax())
+        best_score = float(sims[best_idx])
+
+        if best_score >= self.similarity_threshold:
+            return fine_boxes[best_idx], best_score
+        return coarse_box, coarse_score
+
+    # --------------------------------------------------------------------- #
     # Main detect method                                                      #
     # --------------------------------------------------------------------- #
 
-    def detect(self, frame: np.ndarray) -> List[Detection]:
+    def detect(
+        self,
+        frame: np.ndarray,
+        exclusion_zones: Optional[List[Box]] = None,
+    ) -> List[Detection]:
         """
         Find reference-matched logos in a single BGR frame.
-        Returns Detection objects compatible with the rest of the pipeline.
+
+        Args:
+            frame: BGR numpy array.
+            exclusion_zones: list of (x1, y1, x2, y2) boxes in original
+                frame coordinates to skip (e.g. regions already found by OCR).
         """
         orig_h, orig_w = frame.shape[:2]
         frame_area = orig_h * orig_w
@@ -254,7 +386,24 @@ class ReferenceMatcher:
             proc_w, proc_h = orig_w, orig_h
             scale_factor = 1.0
 
-        crops, boxes = self._extract_patches(proc_frame, self.patch_scales, self.stride_ratio)
+        # Scale exclusion zones to processed coordinates
+        proc_exclusions: Optional[List[Box]] = None
+        if exclusion_zones:
+            proc_exclusions = [
+                (
+                    int(z[0] * scale_factor),
+                    int(z[1] * scale_factor),
+                    int(z[2] * scale_factor),
+                    int(z[3] * scale_factor),
+                )
+                for z in exclusion_zones
+            ]
+
+        crops, boxes = self._extract_patches(
+            proc_frame, self.patch_scales, self.stride_ratio,
+            exclusion_zones=proc_exclusions,
+            coverage_threshold=self.exclusion_coverage,
+        )
         if not crops:
             return []
 
@@ -264,7 +413,7 @@ class ReferenceMatcher:
         sims = patch_embs @ self.brand_embeddings.T
 
         # Gather matches above threshold
-        match_boxes: List[Tuple[int, int, int, int]] = []
+        match_boxes: List[Box] = []
         match_scores: List[float] = []
         match_labels: List[int] = []
 
@@ -272,32 +421,49 @@ class ReferenceMatcher:
             for brand_idx in range(sims.shape[1]):
                 score = float(sims[patch_idx, brand_idx])
                 if score >= self.similarity_threshold:
-                    bx1, by1, bx2, by2 = boxes[patch_idx]
-                    # Scale back to original frame coordinates
-                    ox1 = int(bx1 / scale_factor)
-                    oy1 = int(by1 / scale_factor)
-                    ox2 = int(bx2 / scale_factor)
-                    oy2 = int(by2 / scale_factor)
-                    ox1 = max(0, min(ox1, orig_w))
-                    oy1 = max(0, min(oy1, orig_h))
-                    ox2 = max(0, min(ox2, orig_w))
-                    oy2 = max(0, min(oy2, orig_h))
-                    match_boxes.append((ox1, oy1, ox2, oy2))
+                    match_boxes.append(boxes[patch_idx])
                     match_scores.append(score)
                     match_labels.append(brand_idx)
 
         keep = self._nms(match_boxes, match_scores, match_labels, self.nms_iou)
 
-        detections: List[Detection] = []
+        # Refine kept detections for tighter bounding boxes
+        refined_boxes: List[Box] = []
+        refined_scores: List[float] = []
+        refined_labels: List[int] = []
         for idx in keep:
-            x1, y1, x2, y2 = match_boxes[idx]
-            brand_name = self.brand_names[match_labels[idx]]
-            conf = match_scores[idx]
+            box = match_boxes[idx]
+            score = match_scores[idx]
+            brand_idx = match_labels[idx]
+
+            if self.refine:
+                box, score = self._refine_box(proc_frame, box, brand_idx, score)
+
+            refined_boxes.append(box)
+            refined_scores.append(score)
+            refined_labels.append(brand_idx)
+
+        # Second NMS pass after refinement (boxes may have shifted)
+        if self.refine and refined_boxes:
+            keep2 = self._nms(refined_boxes, refined_scores, refined_labels, self.nms_iou)
+        else:
+            keep2 = list(range(len(refined_boxes)))
+
+        detections: List[Detection] = []
+        for idx in keep2:
+            bx1, by1, bx2, by2 = refined_boxes[idx]
+            # Scale back to original frame coordinates
+            x1 = max(0, min(int(bx1 / scale_factor), orig_w))
+            y1 = max(0, min(int(by1 / scale_factor), orig_h))
+            x2 = max(0, min(int(bx2 / scale_factor), orig_w))
+            y2 = max(0, min(int(by2 / scale_factor), orig_h))
+            brand_name = self.brand_names[refined_labels[idx]]
+            conf = refined_scores[idx]
             bw = max(1, x2 - x1)
             bh = max(1, y2 - y1)
 
             detections.append(Detection(
-                class_id=match_labels[idx],
+                class_id=refined_labels[idx],
                 label=brand_name,
                 confidence=round(conf, 4),
                 x1=x1, y1=y1, x2=x2, y2=y2,
