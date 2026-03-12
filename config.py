@@ -22,19 +22,18 @@ class PipelineConfig:
     # "detect"  = YOLO only
     # "ocr"     = OCR only (no model needed)
     # "both"    = YOLO + OCR
-    # "rekog"   = Amazon Rekognition (detect_labels or custom_labels)
     mode: str = "detect"
 
     # --- Detector backend ---
-    # "yolo"               = local YOLOv8 model (default)
-    # "rekognition-labels" = AWS Rekognition DetectLabels
-    # "rekognition-custom" = AWS Rekognition DetectCustomLabels (trained project)
+    # "yolo"      = local YOLOv8 model (default)
+    # "reference" = CLIP-based reference logo matching
     detector: str = "yolo"
 
-    # --- Rekognition ---
-    rekognition_project_arn: str = ""   # required for rekognition-custom
-    rekognition_region: str = "us-east-1"
-    rekognition_aws_profile: str = ""   # optional; uses default credential chain if empty
+    # --- Reference matching (CLIP) ---
+    logos_dir: str = ""                   # path to reference logos directory
+    clip_model: str = "ViT-B-32"         # open_clip model architecture
+    clip_pretrained: str = "openai"       # pretrained weights tag
+    similarity_threshold: float = 0.75   # min cosine similarity to count as a match
 
     # --- OCR ---
     ocr_backend: str = "easyocr"  # "paddle" or "easyocr" (use easyocr if Paddle segfaults on CPU)

@@ -77,7 +77,18 @@ def run_pipeline(config: PipelineConfig) -> dict:
 
     use_detect = mode in ("detect", "both")
     use_ocr = mode in ("ocr", "both")
-    use_rekog = config.detector.startswith("rekognition")
+    use_reference = config.detector == "reference"
+
+    if use_reference and config.logos_dir:
+        ref_root = Path(config.logos_dir)
+        if ref_root.is_dir():
+            derived = [
+                d.name for d in sorted(ref_root.iterdir())
+                if d.is_dir() and not d.name.startswith(".")
+            ]
+            for name in derived:
+                if name.lower() not in {t.lower() for t in target_labels}:
+                    target_labels.append(name)
 
     if use_ocr and not target_labels:
         print("[ERROR] OCR mode requires target labels. Use --labels or --labels-file.")
@@ -96,12 +107,12 @@ def run_pipeline(config: PipelineConfig) -> dict:
         print(f"  Total Frms : {media.total_frames}")
     print(f"  Mode       : {mode}")
     print(f"  Detector   : {config.detector}")
-    if use_detect and not use_rekog:
+    if use_detect and not use_reference:
         print(f"  Model      : {config.model_path}")
-    if use_rekog:
-        print(f"  Rekog region: {config.rekognition_region}")
-        if config.rekognition_project_arn:
-            print(f"  Rekog ARN  : {config.rekognition_project_arn}")
+    if use_reference:
+        print(f"  Logos dir  : {config.logos_dir}")
+        print(f"  CLIP model : {config.clip_model} ({config.clip_pretrained})")
+        print(f"  Sim thresh : {config.similarity_threshold}")
     print(f"  Sample FPS : {config.fps}")
     if target_labels:
         print(f"  Labels     : {len(target_labels)} brands")
@@ -114,16 +125,18 @@ def run_pipeline(config: PipelineConfig) -> dict:
 
     # ---- Init components (only what's needed) ----
     detector = None
-    if use_rekog:
-        from src.rekognition_detector import RekognitionDetector
-        rekog_mode = "custom" if config.detector == "rekognition-custom" else "labels"
-        detector = RekognitionDetector(
-            mode=rekog_mode,
-            project_version_arn=config.rekognition_project_arn or None,
-            target_labels=target_labels or None,
-            confidence_threshold=config.confidence_threshold,
-            region=config.rekognition_region,
-            aws_profile=config.rekognition_aws_profile or None,
+    if use_reference:
+        if not config.logos_dir:
+            print("[ERROR] --logos-dir is required when --detector reference is used.")
+            sys.exit(1)
+        from src.reference_matcher import ReferenceMatcher
+        detector = ReferenceMatcher(
+            logos_dir=config.logos_dir,
+            model_name=config.clip_model,
+            pretrained=config.clip_pretrained,
+            similarity_threshold=config.similarity_threshold,
+            device=config.device,
+            img_size=config.img_size,
         )
     elif use_detect:
         from src.logo_detector import LogoDetector
@@ -310,17 +323,19 @@ Examples:
     parser.add_argument("--no-crops", action="store_true", help="Skip saving cropped logos")
     parser.add_argument(
         "--detector", default="yolo",
-        choices=["yolo", "rekognition-labels", "rekognition-custom"],
+        choices=["yolo", "reference"],
         help="Detection backend (default: yolo)",
     )
 
-    rekog_group = parser.add_argument_group("Rekognition options")
-    rekog_group.add_argument("--rekognition-arn", type=str, default="",
-                             help="Project version ARN for rekognition-custom mode")
-    rekog_group.add_argument("--rekognition-region", type=str, default="us-east-1",
-                             help="AWS region (default: us-east-1)")
-    rekog_group.add_argument("--aws-profile", type=str, default="",
-                             help="AWS credentials profile name (optional)")
+    ref_group = parser.add_argument_group("Reference matching (CLIP) options")
+    ref_group.add_argument("--logos-dir", type=str, default="",
+                           help="Path to reference logos directory (required for --detector reference)")
+    ref_group.add_argument("--clip-model", type=str, default="ViT-B-32",
+                           help="CLIP model architecture (default: ViT-B-32)")
+    ref_group.add_argument("--clip-pretrained", type=str, default="openai",
+                           help="CLIP pretrained weights tag (default: openai)")
+    ref_group.add_argument("--similarity-threshold", type=float, default=0.75,
+                           help="Min cosine similarity for a reference match (default: 0.75)")
 
     label_group = parser.add_argument_group("Label / OCR options")
     label_group.add_argument(
@@ -371,9 +386,10 @@ Examples:
         ocr_match_threshold=args.ocr_match_threshold,
         ocr_confidence_boost=args.ocr_boost,
         detector=args.detector,
-        rekognition_project_arn=args.rekognition_arn,
-        rekognition_region=args.rekognition_region,
-        rekognition_aws_profile=args.aws_profile,
+        logos_dir=args.logos_dir,
+        clip_model=args.clip_model,
+        clip_pretrained=args.clip_pretrained,
+        similarity_threshold=args.similarity_threshold,
     )
 
     run_pipeline(config)
