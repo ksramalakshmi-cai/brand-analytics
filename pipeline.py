@@ -529,7 +529,7 @@ Examples:
     )
     parser.add_argument("--input", "-i", required=True, help="Path to image or video file")
     parser.add_argument(
-        "--mode", choices=["detect", "ocr", "both"], default="detect",
+        "--mode", choices=["detect", "ocr", "both"], default="both",
         help="Pipeline mode: detect (YOLO only), ocr (OCR only), both (YOLO+OCR)",
     )
     parser.add_argument("--model", "-m", default="yolov8n.pt", help="YOLO model weights (default: yolov8n.pt)")
@@ -537,7 +537,7 @@ Examples:
     parser.add_argument("--conf", type=float, default=0.8, help="Confidence threshold (default: 0.8)")
     parser.add_argument("--iou", type=float, default=0.45, help="IoU threshold for NMS (default: 0.45)")
     parser.add_argument("--img-size", type=int, default=640, help="Inference image size (default: 640)")
-    parser.add_argument("--device", default="", help="Device: 'cpu', '0', 'cuda:0', etc. (default: auto)")
+    parser.add_argument("--device", default="cuda", help="Device: 'cpu', '0', 'cuda:0', etc. (default: auto)")
     parser.add_argument("--output", "-o", default="outputs", help="Output directory (default: outputs/)")
     parser.add_argument("--no-frames", action="store_true", help="Skip saving annotated frames")
     parser.add_argument("--no-crops", action="store_true", help="Skip saving cropped logos")
@@ -546,19 +546,19 @@ Examples:
         help="Faster run: fewer CLIP patches, no refinement (~0.5s/frame target). Frames/crops still saved unless --no-frames/--no-crops.",
     )
     parser.add_argument(
-        "--detector", default="yolo",
+        "--detector", default="reference",
         choices=["yolo", "reference"],
         help="Detection backend (default: yolo)",
     )
 
     ref_group = parser.add_argument_group("Reference matching (CLIP) options")
-    ref_group.add_argument("--logos-dir", type=str, default="",
+    ref_group.add_argument("--logos-dir", type=str, default="logos",
                            help="Path to reference logos directory (required for --detector reference)")
     ref_group.add_argument("--clip-model", type=str, default="ViT-B-32",
                            help="CLIP model architecture (default: ViT-B-32)")
     ref_group.add_argument("--clip-pretrained", type=str, default="openai",
                            help="CLIP pretrained weights tag (default: openai)")
-    ref_group.add_argument("--similarity-threshold", type=float, default=0.75,
+    ref_group.add_argument("--similarity-threshold", type=float, default=0.8,
                            help="Min cosine similarity for a reference match (default: 0.75)")
     ref_group.add_argument("--ocr-exclusion-coverage", type=float, default=1.0,
                            help="Skip CLIP patches overlapping OCR hits by this fraction (default: 0.3)")
