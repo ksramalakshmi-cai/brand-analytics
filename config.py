@@ -1,6 +1,70 @@
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
+
+
+@dataclass
+class LabelConfig:
+    """Per-brand method routing parsed from labels.yaml.
+
+    Each brand is assigned a method:
+      ocr      — OCR is the primary detector for this brand (text-heavy logos)
+      detector — CLIP/YOLO is the primary detector (visual logos)
+      both     — use both methods
+    """
+    ocr: List[str] = field(default_factory=list)
+    detector: List[str] = field(default_factory=list)
+    both: List[str] = field(default_factory=list)
+
+    @property
+    def all_labels(self) -> List[str]:
+        """Every brand name, deduplicated, preserving order."""
+        seen: Set[str] = set()
+        out: List[str] = []
+        for name in self.ocr + self.detector + self.both:
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append(name)
+        return out
+
+    @property
+    def ocr_eligible(self) -> List[str]:
+        """Brands that OCR should try to find (ocr + both)."""
+        return self._dedup(self.ocr + self.both)
+
+    @property
+    def detector_eligible(self) -> List[str]:
+        """Brands that the detector should try to find (detector + both)."""
+        return self._dedup(self.detector + self.both)
+
+    @property
+    def detector_eligible_set(self) -> Set[str]:
+        return {n.lower() for n in self.detector_eligible}
+
+    @property
+    def ocr_eligible_set(self) -> Set[str]:
+        return {n.lower() for n in self.ocr_eligible}
+
+    @staticmethod
+    def _dedup(names: List[str]) -> List[str]:
+        seen: Set[str] = set()
+        out: List[str] = []
+        for n in names:
+            key = n.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append(n)
+        return out
+
+    def method_for(self, label: str) -> str:
+        """Return the assigned method for a label ('ocr', 'detector', or 'both')."""
+        low = label.lower()
+        if low in {n.lower() for n in self.ocr}:
+            return "ocr"
+        if low in {n.lower() for n in self.detector}:
+            return "detector"
+        return "both"
 
 
 @dataclass

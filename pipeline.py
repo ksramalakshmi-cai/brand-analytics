@@ -32,36 +32,76 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from tqdm import tqdm
 
-from config import PipelineConfig
+from config import PipelineConfig, LabelConfig
 from src.frame_extractor import extract_frames, get_media_info
 from src.logo_detector import Detection
 from src.brand_tracker import BrandTracker
 from src.visualizer import Visualizer
 
+_VALID_METHODS = {"ocr", "detector", "both"}
 
-def _load_labels(config: PipelineConfig) -> List[str]:
-    """Collect target labels from both --labels and --labels-file."""
-    labels: List[str] = list(config.target_labels)
 
+def _load_label_config(config: PipelineConfig) -> LabelConfig:
+    """Build a LabelConfig from --labels, --labels-file (.yaml or .txt).
+
+    YAML format (per-brand method):
+        google: ocr
+        emirates: detector
+        budweiser: both
+
+    Plain-text format (backward compatible, all default to 'both'):
+        google
+        emirates
+        budweiser
+    """
+    lc = LabelConfig()
+
+    # 1) --labels CLI flag  →  all default to "both"
+    for raw in config.target_labels:
+        name = raw.strip()
+        if name:
+            lc.both.append(name)
+
+    # 2) --labels-file
     if config.labels_file:
         p = Path(config.labels_file)
         if p.exists():
-            with open(p) as f:
-                for line in f:
-                    line = line.strip().rstrip(",").strip()
-                    if line and not line.startswith("#"):
-                        labels.append(line)
+            if p.suffix.lower() in (".yaml", ".yml"):
+                _parse_yaml_labels(p, lc)
+            else:
+                _parse_txt_labels(p, lc)
         else:
             print(f"[WARN] Labels file not found: {p}")
 
-    seen = set()
-    deduped = []
-    for l in labels:
-        key = l.lower()
-        if key not in seen:
-            seen.add(key)
-            deduped.append(l)
-    return deduped
+    return lc
+
+
+def _parse_yaml_labels(path: Path, lc: LabelConfig) -> None:
+    import yaml
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        return
+    for name, method in data.items():
+        name = str(name).strip()
+        method = str(method).strip().lower()
+        if not name or method not in _VALID_METHODS:
+            continue
+        if method == "ocr":
+            lc.ocr.append(name)
+        elif method == "detector":
+            lc.detector.append(name)
+        else:
+            lc.both.append(name)
+
+
+def _parse_txt_labels(path: Path, lc: LabelConfig) -> None:
+    """Legacy plain-text file: one brand per line, all assigned 'both'."""
+    with open(path) as f:
+        for line in f:
+            line = line.strip().rstrip(",").strip()
+            if line and not line.startswith("#"):
+                lc.both.append(line)
 
 
 def run_pipeline(config: PipelineConfig) -> dict:
@@ -73,26 +113,34 @@ def run_pipeline(config: PipelineConfig) -> dict:
 
     mode = config.mode
     media = get_media_info(input_path)
-    target_labels = _load_labels(config)
+    label_config = _load_label_config(config)
 
     use_detect = mode in ("detect", "both")
     use_ocr = mode in ("ocr", "both")
     use_reference = config.detector == "reference"
 
+    # Auto-derive labels from logos_dir sub-folders (default to "both")
     if use_reference and config.logos_dir:
         ref_root = Path(config.logos_dir)
         if ref_root.is_dir():
-            derived = [
-                d.name for d in sorted(ref_root.iterdir())
-                if d.is_dir() and not d.name.startswith(".")
-            ]
-            for name in derived:
-                if name.lower() not in {t.lower() for t in target_labels}:
-                    target_labels.append(name)
+            existing = {n.lower() for n in label_config.all_labels}
+            for d in sorted(ref_root.iterdir()):
+                if d.is_dir() and not d.name.startswith(".") and d.name.lower() not in existing:
+                    label_config.both.append(d.name)
 
-    if use_ocr and not target_labels:
+    all_labels = label_config.all_labels
+
+    if use_ocr and not all_labels:
         print("[ERROR] OCR mode requires target labels. Use --labels or --labels-file.")
         sys.exit(1)
+
+    # Resolve per-mode eligible label sets
+    if mode == "both":
+        ocr_labels = label_config.ocr_eligible
+        det_labels_set = label_config.detector_eligible_set
+    else:
+        ocr_labels = all_labels
+        det_labels_set = {n.lower() for n in all_labels}
 
     # ---- Header ----
     print(f"\n{'='*60}")
@@ -114,8 +162,12 @@ def run_pipeline(config: PipelineConfig) -> dict:
         print(f"  CLIP model : {config.clip_model} ({config.clip_pretrained})")
         print(f"  Sim thresh : {config.similarity_threshold}")
     print(f"  Sample FPS : {config.fps}")
-    if target_labels:
-        print(f"  Labels     : {len(target_labels)} brands")
+    if all_labels:
+        n_ocr = len(label_config.ocr)
+        n_det = len(label_config.detector)
+        n_both = len(label_config.both)
+        print(f"  Labels     : {len(all_labels)} brands "
+              f"(ocr:{n_ocr}  detector:{n_det}  both:{n_both})")
     if use_ocr:
         print(f"  OCR backend: {config.ocr_backend}")
         print(f"  OCR boost  : +{config.ocr_confidence_boost:.0%} on text match")
@@ -149,7 +201,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
         from src.ocr_reader import OCRReader
         use_gpu = torch.cuda.is_available() and config.device != "cpu"
         ocr_reader = OCRReader(
-            target_labels=target_labels,
+            target_labels=ocr_labels,
             languages=config.ocr_languages,
             gpu=use_gpu,
             match_threshold=config.ocr_match_threshold,
@@ -160,7 +212,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
             deepseek_model=config.deepseek_model,
         )
 
-    tracker = BrandTracker(sample_fps=config.fps, target_labels=target_labels)
+    tracker = BrandTracker(sample_fps=config.fps, target_labels=all_labels)
     visualizer = Visualizer(config)
 
     if media.is_video:
@@ -182,21 +234,25 @@ def run_pipeline(config: PipelineConfig) -> dict:
         detections: List[Detection] = []
 
         if mode == "ocr":
-            # OCR-only: scan full frame for text brands
             detections = ocr_reader.scan_frame(frame_meta.frame)
             ocr_match_count += len(detections)
 
         elif mode == "both" and use_reference and detector is not None:
-            # OCR-first strategy: OCR scans full frame, CLIP fills the gaps
+            # OCR-first: scan for ocr-eligible brands
             ocr_dets = ocr_reader.scan_frame(frame_meta.frame)
             ocr_match_count += len(ocr_dets)
 
+            # CLIP fills uncovered areas, filtered to detector-eligible brands
             exclusion_zones = [
                 (d.x1, d.y1, d.x2, d.y2) for d in ocr_dets
             ]
             clip_dets = detector.detect(
                 frame_meta.frame, exclusion_zones=exclusion_zones,
             )
+            clip_dets = [
+                d for d in clip_dets
+                if d.label.lower() in det_labels_set
+            ]
             detections = ocr_dets + clip_dets
 
         elif mode == "both" and not use_reference and detector is not None:
@@ -260,8 +316,8 @@ def run_pipeline(config: PipelineConfig) -> dict:
     # ---- Print results ----
     summaries = tracker.summarise()
 
-    if target_labels:
-        target_lower = {t.lower() for t in target_labels}
+    if all_labels:
+        target_lower = {t.lower() for t in all_labels}
         display_summaries = {
             label: s for label, s in summaries.items()
             if label.lower() in target_lower
@@ -277,8 +333,8 @@ def run_pipeline(config: PipelineConfig) -> dict:
     print(f"  Total detections: {detection_count}")
     if use_ocr:
         print(f"  OCR text matches: {ocr_match_count}")
-    if target_labels:
-        print(f"  Matched brands  : {len(display_summaries)} / {len(target_labels)} targets")
+    if all_labels:
+        print(f"  Matched brands  : {len(display_summaries)} / {len(all_labels)} targets")
     else:
         print(f"  Unique labels   : {len(display_summaries)}")
     print()
@@ -298,9 +354,9 @@ def run_pipeline(config: PipelineConfig) -> dict:
         print(f"    Avg confidence  : {s.avg_confidence:.3f}")
         print()
 
-    if target_labels:
+    if all_labels:
         matched = {l.lower() for l in display_summaries}
-        missing = [t for t in target_labels if t.lower() not in matched]
+        missing = [t for t in all_labels if t.lower() not in matched]
         if missing:
             print(f"  Brands NOT detected: {', '.join(missing)}")
             print()
@@ -365,8 +421,8 @@ Examples:
         help="Comma-separated brand names to match (e.g. 'coca cola,nike,adidas')",
     )
     label_group.add_argument(
-        "--labels-file", type=str, default="labels.txt",
-        help="Path to text file with one brand name per line (default: labels.txt)",
+        "--labels-file", type=str, default="labels.yaml",
+        help="Path to labels YAML/text file (default: labels.yaml)",
     )
     label_group.add_argument(
         "--ocr-lang", type=str, default="en",

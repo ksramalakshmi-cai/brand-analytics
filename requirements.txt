@@ -4,6 +4,7 @@ numpy>=1.24.0
 Pillow>=10.0.0
 pandas>=2.1.0
 tqdm>=4.66.0
+pyyaml>=6.0
 easyocr>=1.7.0
 paddlepaddle>=2.6.0
 paddleocr>=2.7.0
