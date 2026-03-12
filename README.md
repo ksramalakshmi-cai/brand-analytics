@@ -124,6 +124,27 @@ yolo detect train data=logo_dataset.yaml model=yolov8n.pt epochs=100
 python pipeline.py --input video.mp4 --model runs/detect/train/weights/best.pt
 ```
 
+## Troubleshooting: PaddleOCR segfault on CPU
+
+On some CPU-only environments (e.g. AWS without GPU), PaddleOCR can hit an Intel MKL segfault. Try:
+
+1. **Use the wrapper script** (sets thread limits before Python starts):
+   ```bash
+   ./run_ocr.sh --input videoplayback.mp4 --mode ocr
+   ```
+
+2. **Set env vars yourself** before running:
+   ```bash
+   MKL_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 pipeline.py --input videoplayback.mp4 --mode ocr
+   ```
+
+3. **Use the CPU-only Paddle build** if you installed the default (GPU) one:
+   ```bash
+   pip uninstall paddlepaddle
+   pip install paddlepaddle
+   ```
+   (Official CPU wheel is typically named `paddlepaddle`; GPU is `paddlepaddle-gpu`.)
+
 ## Programmatic Usage
 
 ```python

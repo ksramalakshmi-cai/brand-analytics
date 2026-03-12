@@ -12,8 +12,13 @@ Usage:
     python pipeline.py --input video.mp4 --mode ocr
     python pipeline.py --input video.mp4 --mode both
 """
-
 from __future__ import annotations
+
+# Reduce PaddleOCR/Intel MKL segfaults on CPU — must be set before any paddle import
+import os as _os
+for _k in ("MKL_NUM_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    _os.environ.setdefault(_k, "1")
+_os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 import argparse
 import sys
