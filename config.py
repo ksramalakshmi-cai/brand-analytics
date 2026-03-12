@@ -37,9 +37,15 @@ class PipelineConfig:
     ocr_exclusion_coverage: float = 0.3  # skip CLIP patches that overlap OCR hits by this fraction
 
     # --- OCR ---
-    ocr_backend: str = "easyocr"  # "paddle" or "easyocr" (use easyocr if Paddle segfaults on CPU)
+    # "easyocr" | "paddle" | "deepseek"
+    ocr_backend: str = "easyocr"
     target_labels: List[str] = field(default_factory=list)
     labels_file: str = ""  # path to a text file with one brand name per line
+
+    # --- DeepSeek VLM OCR ---
+    deepseek_api_key: str = ""                         # or set DEEPSEEK_API_KEY env var
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"              # any OpenAI-compatible vision model
     ocr_languages: List[str] = field(default_factory=lambda: ["en"])
     ocr_match_threshold: float = 0.5   # min fuzzy-match ratio to count as a hit
     ocr_confidence_boost: float = 0.15  # added to detection conf on label match

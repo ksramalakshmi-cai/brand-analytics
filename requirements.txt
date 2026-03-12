@@ -9,3 +9,5 @@ paddlepaddle>=2.6.0
 paddleocr>=2.7.0
 # CLIP-based reference matching
 open-clip-torch>=2.24.0
+# DeepSeek / OpenAI-compatible VLM OCR
+openai>=1.0.0

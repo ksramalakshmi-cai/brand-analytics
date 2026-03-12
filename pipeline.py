@@ -155,6 +155,9 @@ def run_pipeline(config: PipelineConfig) -> dict:
             match_threshold=config.ocr_match_threshold,
             confidence_boost=config.ocr_confidence_boost,
             backend=config.ocr_backend,
+            deepseek_api_key=config.deepseek_api_key,
+            deepseek_base_url=config.deepseek_base_url,
+            deepseek_model=config.deepseek_model,
         )
 
     tracker = BrandTracker(sample_fps=config.fps, target_labels=target_labels)
@@ -378,9 +381,17 @@ Examples:
         help="Confidence boost added on OCR text match in 'both' mode (default: 0.15)",
     )
     label_group.add_argument(
-        "--ocr-backend", choices=["paddle", "easyocr"], default="easyocr",
-        help="OCR engine: easyocr (default, avoids Paddle segfault on CPU) or paddle",
+        "--ocr-backend", choices=["easyocr", "paddle", "deepseek"], default="easyocr",
+        help="OCR engine: easyocr (default), paddle, or deepseek (VLM, needs API key)",
     )
+
+    ds_group = parser.add_argument_group("DeepSeek OCR options")
+    ds_group.add_argument("--deepseek-api-key", type=str, default="",
+                          help="DeepSeek API key (or set DEEPSEEK_API_KEY env var)")
+    ds_group.add_argument("--deepseek-base-url", type=str, default="https://api.deepseek.com",
+                          help="DeepSeek-compatible API base URL (default: https://api.deepseek.com)")
+    ds_group.add_argument("--deepseek-model", type=str, default="deepseek-chat",
+                          help="Vision model name (default: deepseek-chat)")
 
     args = parser.parse_args()
 
@@ -404,6 +415,9 @@ Examples:
         ocr_languages=[l.strip() for l in args.ocr_lang.split(",")],
         ocr_match_threshold=args.ocr_match_threshold,
         ocr_confidence_boost=args.ocr_boost,
+        deepseek_api_key=args.deepseek_api_key,
+        deepseek_base_url=args.deepseek_base_url,
+        deepseek_model=args.deepseek_model,
         detector=args.detector,
         logos_dir=args.logos_dir,
         clip_model=args.clip_model,
