@@ -1,0 +1,11 @@
+*.pt
+.venv/
+outputs/
+__pycache__/
+bin/
+include/
+lib/
+lib64/
+sample/
+*.mp4
+.vscode/
