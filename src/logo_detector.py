@@ -45,6 +45,7 @@ class Detection:
     ocr_matched_label: Optional[str] = None
     ocr_match_ratio: float = 0.0
     original_confidence: float = 0.0  # pre-boost confidence
+    source: str = "detector"  # detector | reference | ocr
 
 
 class LogoDetector:
@@ -102,6 +103,7 @@ class LogoDetector:
                     height_px=bh,
                     area_px=bw * bh,
                     area_pct=round((bw * bh) / frame_area * 100, 2),
+                    source="detector",
                 ))
 
         return detections

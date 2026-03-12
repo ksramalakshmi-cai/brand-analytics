@@ -104,16 +104,28 @@ def _parse_txt_labels(path: Path, lc: LabelConfig) -> None:
                 lc.both.append(line)
 
 
-def run_pipeline(config: PipelineConfig) -> dict:
-    """Execute the full pipeline and return the brand summaries."""
+def run_pipeline(
+    config: PipelineConfig,
+    label_config: Optional[LabelConfig] = None,
+) -> dict:
+    """Execute the full pipeline and return structured results.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+    label_config : LabelConfig, optional
+        If provided, used directly (API path).  Otherwise built from
+        ``config.target_labels`` / ``config.labels_file`` (CLI path).
+    """
     input_path = Path(config.input_path)
     if not input_path.exists():
-        print(f"[ERROR] Input file not found: {input_path}")
-        sys.exit(1)
+        raise FileNotFoundError(f"Input file not found: {input_path}")
 
     mode = config.mode
     media = get_media_info(input_path)
-    label_config = _load_label_config(config)
+
+    if label_config is None:
+        label_config = _load_label_config(config)
 
     use_detect = mode in ("detect", "both")
     use_ocr = mode in ("ocr", "both")
@@ -122,8 +134,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
     all_labels = label_config.all_labels
 
     if use_ocr and not all_labels:
-        print("[ERROR] OCR mode requires target labels. Use --labels or --labels-file.")
-        sys.exit(1)
+        raise ValueError("OCR mode requires target labels. Use --labels or --labels-file.")
 
     # Resolve per-mode eligible label sets
     if mode == "both":
@@ -170,8 +181,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
     detector = None
     if use_reference:
         if not config.logos_dir:
-            print("[ERROR] --logos-dir is required when --detector reference is used.")
-            sys.exit(1)
+            raise ValueError("--logos-dir is required when --detector reference is used.")
         from src.reference_matcher import ReferenceMatcher
         det_brand_names = list(label_config.detector_eligible_set) if all_labels else None
         detector = ReferenceMatcher(
@@ -264,6 +274,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
                 if det.ocr_matched_label:
                     det.confidence = min(1.0, det.confidence + ocr_result["ocr_confidence_boost"])
                     det.label = det.ocr_matched_label
+                    det.source = "ocr+detector"
                     ocr_match_count += 1
 
         elif mode == "detect" and detector is not None:
@@ -306,7 +317,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
     if config.save_report_json:
         tracker.save_summary_json(run_dir / "brand_summary.json", media_info=media)
 
-    # ---- Print results ----
+    # ---- Build results ----
     summaries = tracker.summarise()
 
     if all_labels:
@@ -318,6 +329,111 @@ def run_pipeline(config: PipelineConfig) -> dict:
     else:
         display_summaries = summaries
 
+    matched = {l.lower() for l in display_summaries}
+    missing = [t for t in all_labels if t.lower() not in matched] if all_labels else []
+    target_lower = {t.lower() for t in all_labels} if all_labels else set()
+
+    filtered_records = [
+        r for r in tracker.records
+        if not target_lower or r.label.lower() in target_lower
+    ]
+    frames_with_target_brands = len({r.frame_index for r in filtered_records})
+    frame_coverage_pct = round(
+        (frames_with_target_brands / estimated_frames) * 100, 2
+    ) if estimated_frames else 0.0
+
+    brands_result = {}
+    for label, s in display_summaries.items():
+        vis_pct = (
+            round(s.total_screen_time_sec / media.duration_sec * 100, 2)
+            if media.is_video and media.duration_sec > 0 else None
+        )
+        label_records = [r for r in filtered_records if r.label.lower() == label.lower()]
+        source_set = sorted({r.source for r in label_records if r.source})
+        if source_set:
+            source_tokens = set()
+            for src in source_set:
+                source_tokens.update(part for part in src.split("+") if part)
+            if source_tokens == {"ocr"}:
+                source = "ocr"
+            elif source_tokens == {"reference"}:
+                source = "reference"
+            elif source_tokens == {"detector"}:
+                source = "detector"
+            else:
+                source = "+".join(sorted(source_tokens))
+        else:
+            source = "unknown"
+        brands_result[label] = {
+            "label": label,
+            "source": source,
+            "total_detections": s.total_detections,
+            "total_screen_time_sec": s.total_screen_time_sec,
+            "visibility_pct": vis_pct,
+            "avg_confidence": s.avg_confidence,
+            "avg_area_pct": s.avg_area_pct,
+            "min_area_pct": s.min_area_pct,
+            "max_area_pct": s.max_area_pct,
+            "avg_position_nx": s.avg_position_nx,
+            "avg_position_ny": s.avg_position_ny,
+            "dominant_quadrant": s.dominant_quadrant,
+            "frames_visible": s.frames_visible,
+            "timestamps_visible": s.timestamps_visible,
+            "first_seen_timestamp_sec": s.timestamps_visible[0] if s.timestamps_visible else None,
+            "last_seen_timestamp_sec": s.timestamps_visible[-1] if s.timestamps_visible else None,
+        }
+
+    detection_details = [
+        {
+            "frame_number": r.frame_index,
+            "timestamp_sec": r.timestamp_sec,
+            "label": r.label,
+            "source": r.source,
+            "confidence": r.confidence,
+            "coordinates_px": {
+                "x1": r.x1, "y1": r.y1, "x2": r.x2, "y2": r.y2,
+                "width_px": r.width_px, "height_px": r.height_px,
+            },
+            "coordinates_normalized": {
+                "x1": r.nx1, "y1": r.ny1, "x2": r.nx2, "y2": r.ny2,
+            },
+            "space_occupied": {
+                "area_px": r.area_px,
+                "area_pct": r.area_pct,
+            },
+            "region": r.position_quadrant,
+        }
+        for r in filtered_records
+    ]
+
+    result = {
+        "status": "success",
+        "media": {
+            "path": str(media.path),
+            "is_video": media.is_video,
+            "width": media.width,
+            "height": media.height,
+            "duration_sec": media.duration_sec,
+            "native_fps": media.native_fps,
+        },
+        "elapsed_sec": round(elapsed, 2),
+        "frames_analysed": estimated_frames,
+        "total_detections": detection_count,
+        "ocr_matches": ocr_match_count,
+        "brands_detected": len(display_summaries),
+        "brands_requested": len(all_labels),
+        "summary_metrics": {
+            "frames_with_target_brands": frames_with_target_brands,
+            "frame_coverage_pct": frame_coverage_pct,
+            "total_unique_target_brands_seen": len(display_summaries),
+        },
+        "brands": brands_result,
+        "detection_details": detection_details,
+        "brands_not_detected": missing,
+        "output_dir": str(run_dir.resolve()),
+    }
+
+    # ---- Console summary (CLI usage) ----
     print(f"\n{'='*60}")
     print(f"  Results — mode: {mode}")
     print(f"{'='*60}")
@@ -333,13 +449,13 @@ def run_pipeline(config: PipelineConfig) -> dict:
     print()
 
     for label, s in sorted(display_summaries.items(), key=lambda x: -x[1].total_screen_time_sec):
-        vis_pct = (
+        vis_pct_str = (
             f"{s.total_screen_time_sec / media.duration_sec * 100:.1f}%"
             if media.is_video and media.duration_sec > 0 else "N/A"
         )
         print(f"  [{label}]")
         print(f"    Detections      : {s.total_detections}")
-        print(f"    Screen time     : {s.total_screen_time_sec:.1f}s ({vis_pct} of video)")
+        print(f"    Screen time     : {s.total_screen_time_sec:.1f}s ({vis_pct_str} of video)")
         print(f"    Avg size        : {s.avg_area_pct:.2f}% of frame")
         print(f"    Size range      : {s.min_area_pct:.2f}% - {s.max_area_pct:.2f}%")
         print(f"    Avg position    : ({s.avg_position_nx:.2f}, {s.avg_position_ny:.2f})")
@@ -347,17 +463,14 @@ def run_pipeline(config: PipelineConfig) -> dict:
         print(f"    Avg confidence  : {s.avg_confidence:.3f}")
         print()
 
-    if all_labels:
-        matched = {l.lower() for l in display_summaries}
-        missing = [t for t in all_labels if t.lower() not in matched]
-        if missing:
-            print(f"  Brands NOT detected: {', '.join(missing)}")
-            print()
+    if missing:
+        print(f"  Brands NOT detected: {', '.join(missing)}")
+        print()
 
     print(f"  Outputs saved to: {run_dir.resolve()}")
     print(f"{'='*60}\n")
 
-    return summaries
+    return result
 
 
 def main():
@@ -475,7 +588,11 @@ Examples:
         ocr_exclusion_coverage=args.ocr_exclusion_coverage,
     )
 
-    run_pipeline(config)
+    try:
+        run_pipeline(config)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[ERROR] {exc}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -492,6 +492,7 @@ class ReferenceMatcher:
                 height_px=bh,
                 area_px=bw * bh,
                 area_pct=round((bw * bh) / frame_area * 100, 2),
+                source="reference",
             ))
 
         return detections

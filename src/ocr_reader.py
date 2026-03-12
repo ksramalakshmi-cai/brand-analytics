@@ -328,6 +328,7 @@ class OCRReader:
                 ocr_matched_label=matched_label,
                 ocr_match_ratio=ratio,
                 original_confidence=0.0,
+                source="ocr",
             ))
 
         return detections
@@ -385,6 +386,7 @@ class OCRReader:
                 ocr_matched_label=matched_label,
                 ocr_match_ratio=ratio,
                 original_confidence=0.0,
+                source="ocr",
             ))
 
         return detections

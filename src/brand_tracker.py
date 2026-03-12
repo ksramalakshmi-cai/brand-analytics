@@ -40,6 +40,7 @@ class FrameRecord:
     frame_width: int
     frame_height: int
     position_quadrant: str  # e.g. "top-left", "center"
+    source: str = "detector"
     ocr_text: str = ""
     ocr_matched_label: Optional[str] = None
     ocr_match_ratio: float = 0.0
@@ -102,6 +103,7 @@ class BrandTracker:
                 area_px=det.area_px, area_pct=det.area_pct,
                 frame_width=frame_width, frame_height=frame_height,
                 position_quadrant=_quadrant(nx_center, ny_center),
+                source=det.source,
                 ocr_text=det.ocr_text,
                 ocr_matched_label=det.ocr_matched_label,
                 ocr_match_ratio=det.ocr_match_ratio,
