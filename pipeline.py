@@ -119,15 +119,6 @@ def run_pipeline(config: PipelineConfig) -> dict:
     use_ocr = mode in ("ocr", "both")
     use_reference = config.detector == "reference"
 
-    # Auto-derive labels from logos_dir sub-folders (default to "both")
-    if use_reference and config.logos_dir:
-        ref_root = Path(config.logos_dir)
-        if ref_root.is_dir():
-            existing = {n.lower() for n in label_config.all_labels}
-            for d in sorted(ref_root.iterdir()):
-                if d.is_dir() and not d.name.startswith(".") and d.name.lower() not in existing:
-                    label_config.both.append(d.name)
-
     all_labels = label_config.all_labels
 
     if use_ocr and not all_labels:
@@ -182,6 +173,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
             print("[ERROR] --logos-dir is required when --detector reference is used.")
             sys.exit(1)
         from src.reference_matcher import ReferenceMatcher
+        det_brand_names = list(label_config.detector_eligible_set) if all_labels else None
         detector = ReferenceMatcher(
             logos_dir=config.logos_dir,
             model_name=config.clip_model,
@@ -190,6 +182,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
             device=config.device,
             img_size=config.img_size,
             exclusion_coverage=config.ocr_exclusion_coverage,
+            brand_filter=det_brand_names,
         )
     elif use_detect:
         from src.logo_detector import LogoDetector

@@ -60,6 +60,7 @@ class ReferenceMatcher:
         nms_iou: float = 0.45,
         exclusion_coverage: float = 0.3,
         refine: bool = True,
+        brand_filter: Optional[List[str]] = None,
     ):
         import open_clip
 
@@ -84,23 +85,39 @@ class ReferenceMatcher:
 
         self.brand_names: List[str] = []
         self.brand_embeddings: torch.Tensor = torch.empty(0)
-        self._load_references(logos_dir)
+        self._load_references(logos_dir, brand_filter)
 
     # --------------------------------------------------------------------- #
     # Reference loading                                                      #
     # --------------------------------------------------------------------- #
 
-    def _load_references(self, logos_dir: str) -> None:
+    def _load_references(
+        self, logos_dir: str, brand_filter: Optional[List[str]] = None,
+    ) -> None:
         root = Path(logos_dir)
         if not root.is_dir():
             raise FileNotFoundError(f"Logos directory not found: {root}")
 
-        brand_dirs = sorted(
+        all_dirs = sorted(
             d for d in root.iterdir()
             if d.is_dir() and not d.name.startswith(".")
         )
-        if not brand_dirs:
+        if not all_dirs:
             raise ValueError(f"No brand sub-directories in {root}")
+
+        if brand_filter:
+            allowed = {n.lower() for n in brand_filter}
+            brand_dirs = [d for d in all_dirs if d.name.lower() in allowed]
+            skipped = [d.name for d in all_dirs if d.name.lower() not in allowed]
+            if skipped:
+                print(f"  [ReferenceMatcher] Skipping dirs not in labels: {skipped}")
+        else:
+            brand_dirs = all_dirs
+
+        if not brand_dirs:
+            raise ValueError(
+                f"No matching brand directories in {root} for labels: {brand_filter}"
+            )
 
         names: List[str] = []
         embeddings: List[torch.Tensor] = []
