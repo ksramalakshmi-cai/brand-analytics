@@ -171,7 +171,7 @@ class LogoOut(BaseModel):
 
 
 class ProcessRequest(BaseModel):
-    url: str = Field(..., description="Video URL (CloudFront / S3 presigned / HTTPS)")
+    url: str = Field(..., description="Video URL — s3://bucket/key, CloudFront, or HTTPS")
     video_id: str = Field(..., description="Unique post / video identifier (dedup key)")
     engagements: int = Field(default=0, description="Engagement count for weighting")
     target_logos: List[str] = Field(
@@ -440,10 +440,29 @@ def _save_uploaded_images(images: List[UploadFile], dest_dir: Path) -> int:
 
 
 def _download_video(url: str) -> str:
-    """Download video from URL to a temp file. Returns local path."""
+    """Download video to a temp file. Supports s3:// URIs and http(s) URLs."""
     parsed = urllib.parse.urlparse(url)
+
+    if parsed.scheme == "s3":
+        bucket = parsed.netloc
+        key = parsed.path.lstrip("/")
+        if not bucket or not key:
+            raise ValueError(f"Invalid S3 URI (expected s3://bucket/key): {url}")
+        suffix = Path(key).suffix or ".mp4"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        try:
+            import boto3
+            s3 = boto3.client("s3")
+            s3.download_fileobj(bucket, key, tmp)
+            tmp.close()
+            return tmp.name
+        except Exception as exc:
+            Path(tmp.name).unlink(missing_ok=True)
+            raise RuntimeError(f"Failed to download from S3: {exc}") from exc
+
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
+
     suffix = Path(parsed.path).suffix or ".mp4"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     try:
