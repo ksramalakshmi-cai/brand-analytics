@@ -631,17 +631,18 @@ Examples:
         help="Confidence boost added on OCR text match in 'both' mode (default: 0.15)",
     )
     label_group.add_argument(
-        "--ocr-backend", choices=["easyocr", "paddle", "deepseek"], default="easyocr",
+        "--ocr-backend", choices=["easyocr", "paddle", "deepseek"], default="deepseek",
         help="OCR engine: easyocr (default), paddle, or deepseek (VLM, needs API key)",
     )
 
-    ds_group = parser.add_argument_group("DeepSeek OCR options")
+    ds_group = parser.add_argument_group("Vision-LLM OCR options")
     ds_group.add_argument("--deepseek-api-key", type=str, default="",
-                          help="DeepSeek API key (or set DEEPSEEK_API_KEY env var)")
-    ds_group.add_argument("--deepseek-base-url", type=str, default="https://api.deepseek.com",
-                          help="DeepSeek-compatible API base URL (default: https://api.deepseek.com)")
-    ds_group.add_argument("--deepseek-model", type=str, default="deepseek-chat",
-                          help="Vision model name (default: deepseek-chat)")
+                          help="API key (or set GOOGLE_API_KEY / DEEPSEEK_API_KEY env var)")
+    ds_group.add_argument("--deepseek-base-url", type=str,
+                          default="https://generativelanguage.googleapis.com/v1beta/openai/",
+                          help="OpenAI-compatible vision API base URL")
+    ds_group.add_argument("--deepseek-model", type=str, default="gemini-2.0-flash",
+                          help="Vision model name (default: gemini-2.0-flash)")
 
     args = parser.parse_args()
 

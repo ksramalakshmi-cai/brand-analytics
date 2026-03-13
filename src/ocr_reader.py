@@ -123,61 +123,79 @@ def _image_to_data_url(image: np.ndarray, max_side: int = 1024) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 
-_DEEPSEEK_SCAN_PROMPT = """\
-You are an OCR engine. Analyse this image and return ALL visible text.
-For each distinct text block return a JSON object with:
-  "text": the exact text string,
-  "confidence": your confidence 0.0-1.0,
-  "bbox": [left, top, right, bottom] as fractions of image width/height (0.0-1.0).
-Return ONLY a JSON array, no markdown fences, no commentary."""
+_VLM_SCAN_PROMPT = """\
+You are a precise OCR engine. Analyse this image and extract ALL visible text.
+For EVERY distinct text block, return a JSON object with exactly these fields:
+  "text": the exact text string as it appears,
+  "confidence": your confidence from 0.0 to 1.0,
+  "bbox": [left, top, right, bottom] where each value is a fraction of the image dimension (0.0 to 1.0).
+    - left: x-coordinate of the left edge divided by image width
+    - top: y-coordinate of the top edge divided by image height
+    - right: x-coordinate of the right edge divided by image width
+    - bottom: y-coordinate of the bottom edge divided by image height
+Return ONLY a JSON array. No markdown fences, no explanation, no extra text.
+Example: [{"text":"NIKE","confidence":0.95,"bbox":[0.12,0.35,0.28,0.42]}]"""
 
-_DEEPSEEK_READ_PROMPT = "Extract ALL visible text from this image. Return only the raw text, nothing else."
+_VLM_READ_PROMPT = "Extract ALL visible text from this image. Return only the raw text, nothing else."
 
 
-class _DeepSeekVLM:
-    """Thin wrapper around an OpenAI-compatible vision endpoint (DeepSeek default)."""
+class _VisionLLM:
+    """Wrapper around any OpenAI-compatible vision endpoint (Gemini, GPT-4o, DeepSeek-VL, etc.)."""
 
     def __init__(
         self,
         api_key: str = "",
-        base_url: str = "https://api.deepseek.com",
-        model: str = "deepseek-chat",
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/",
+        model: str = "gemini-2.0-flash",
     ):
         from openai import OpenAI
-        key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        key = (
+            api_key
+            or os.environ.get("DEEPSEEK_API_KEY", "")
+            or os.environ.get("GOOGLE_API_KEY", "")
+            or os.environ.get("OPENAI_API_KEY", "")
+        )
         if not key:
             raise ValueError(
-                "DeepSeek API key required. Set DEEPSEEK_API_KEY env var "
-                "or pass --deepseek-api-key."
+                "Vision LLM API key required. Set DEEPSEEK_API_KEY, GOOGLE_API_KEY, "
+                "or OPENAI_API_KEY env var, or pass --deepseek-api-key."
             )
         self._client = OpenAI(api_key=key, base_url=base_url)
         self._model = model
 
     def _call(self, prompt: str, image: np.ndarray) -> str:
+        from openai import BadRequestError
         data_url = _image_to_data_url(image)
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                }
-            ],
-            max_tokens=2048,
-            temperature=0.0,
-        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    }
+                ],
+                max_tokens=4096,
+                temperature=0.0,
+            )
+        except BadRequestError as exc:
+            raise RuntimeError(
+                f"Vision API rejected the request. The model '{self._model}' at "
+                f"'{self._client.base_url}' likely does not support image input. "
+                f"Use a vision-capable model (e.g. gemini-2.0-flash, gpt-4o). "
+                f"Original error: {exc}"
+            ) from exc
         return resp.choices[0].message.content.strip()
 
     def read_text(self, image: np.ndarray) -> str:
-        return self._call(_DEEPSEEK_READ_PROMPT, image)
+        return self._call(_VLM_READ_PROMPT, image)
 
     def scan_frame_raw(self, image: np.ndarray) -> List[Dict]:
         """Return list of {"text", "confidence", "bbox"} dicts."""
-        raw = self._call(_DEEPSEEK_SCAN_PROMPT, image)
-        # Strip markdown fences if the model wraps the JSON anyway
+        raw = self._call(_VLM_SCAN_PROMPT, image)
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         try:
@@ -201,8 +219,8 @@ class OCRReader:
         confidence_boost: float = 0.15,
         backend: str = "easyocr",
         deepseek_api_key: str = "",
-        deepseek_base_url: str = "https://api.deepseek.com",
-        deepseek_model: str = "deepseek-chat",
+        deepseek_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/",
+        deepseek_model: str = "gemini-2.0-flash",
     ):
         self.target_labels = target_labels
         self.languages = languages or ["en"]
@@ -222,7 +240,7 @@ class OCRReader:
             except (TypeError, ValueError):
                 self._reader = PaddleOCR(use_angle_cls=True, lang=lang)
         elif self._backend == "deepseek":
-            self._vlm = _DeepSeekVLM(
+            self._vlm = _VisionLLM(
                 api_key=deepseek_api_key,
                 base_url=deepseek_base_url,
                 model=deepseek_model,
