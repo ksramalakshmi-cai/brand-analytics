@@ -138,6 +138,7 @@ def _merge_fcs_into_brand_summary_csv(path: Path, brands_result: Dict[str, Any])
 def run_pipeline(
     config: PipelineConfig,
     label_config: Optional[LabelConfig] = None,
+    video_name: Optional[str] = None,
 ) -> dict:
     """Execute the full pipeline and return structured results.
 
@@ -147,6 +148,9 @@ def run_pipeline(
     label_config : LabelConfig, optional
         If provided, used directly (API path).  Otherwise built from
         ``config.target_labels`` / ``config.labels_file`` (CLI path).
+    video_name : str, optional
+        Human-readable name for the video (used as MLflow run name).
+        Defaults to the input filename stem.
     """
     input_path = Path(config.input_path)
     if not input_path.exists():
@@ -512,10 +516,10 @@ def run_pipeline(
     if media.is_video:
         try:
             from src.eval_inference import run_eval
-            video_name = Path(config.input_path).stem
+            _eval_name = video_name or Path(config.input_path).stem
             eval_rows = run_eval(
                 video_path=str(input_path),
-                video_name=video_name,
+                video_name=_eval_name,
                 detection_details=detection_details,
                 total_frames=estimated_frames,
                 sample_fps=config.fps,
