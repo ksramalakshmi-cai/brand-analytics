@@ -780,7 +780,7 @@ def _process_video_job(job_id: str) -> None:
             target_labels=[],
         )
 
-        result = run_pipeline(config, label_config=label_config)
+        result = run_pipeline(config, label_config=label_config, video_name=video_id)
         elapsed = round(time.time() - t0, 2)
 
         # Build detection rows for DB, mapping display name → logo_id

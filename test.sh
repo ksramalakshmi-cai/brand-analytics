@@ -24,7 +24,7 @@ curl -s -X POST "http://localhost:8000/logos" \
 # 5. Send video for processing
 curl -s -X POST "http://localhost:8000/process" \
   -H "Content-Type: application/json" \
-  -d '{"url":"s3://brand-analytics-assets/videos/videoplayback-2.mp4","video_id":"post_123","engagements":100,"target_logos":["aramco", "dp_world", "emirates", "google_gemini_pixel", "hyundai", "marriot_bonvoy", "royal_stag", "sobha_realty"]}'
+  -d '{"url":"s3://brand-analytics-assets/videos/videoplayback-2.mp4","video_id":"post_123","engagements":100,"target_logos":["aramco", "dp_world", "emirates", "google", "hyundai", "marriot_bonvoy", "royal_stag", "sobha_realty"]}'
 
 # 6. Get video processing update (replace JOB_ID with value from step 5)
 curl -s "http://localhost:8000/jobs/JOB_ID"

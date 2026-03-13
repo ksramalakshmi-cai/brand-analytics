@@ -138,6 +138,7 @@ def _merge_fcs_into_brand_summary_csv(path: Path, brands_result: Dict[str, Any])
 def run_pipeline(
     config: PipelineConfig,
     label_config: Optional[LabelConfig] = None,
+    video_name: Optional[str] = None,
 ) -> dict:
     """Execute the full pipeline and return structured results.
 
@@ -147,6 +148,9 @@ def run_pipeline(
     label_config : LabelConfig, optional
         If provided, used directly (API path).  Otherwise built from
         ``config.target_labels`` / ``config.labels_file`` (CLI path).
+    video_name : str, optional
+        Human-readable name for the video (used as MLflow run name).
+        Defaults to the input filename stem.
     """
     input_path = Path(config.input_path)
     if not input_path.exists():
@@ -508,6 +512,24 @@ def run_pipeline(
     if config.save_report_csv:
         _merge_fcs_into_brand_summary_csv(run_dir / "brand_summary.csv", brands_result)
 
+    # ---- Eval inference arm (Gemini ground-truth comparison → MLflow) ----
+    if media.is_video:
+        try:
+            from src.eval_inference import run_eval
+            _eval_name = video_name or Path(config.input_path).stem
+            eval_rows = run_eval(
+                video_path=str(input_path),
+                video_name=_eval_name,
+                detection_details=detection_details,
+                total_frames=estimated_frames,
+                sample_fps=config.fps,
+                target_logos=list(all_labels) if all_labels else None,
+            )
+            if eval_rows is not None:
+                result["eval_results"] = eval_rows
+        except Exception as eval_exc:
+            print(f"  [eval] Eval step failed (non-fatal): {eval_exc}")
+
     # ---- Console summary (CLI usage) ----
     print(f"\n{'='*60}")
     print(f"  Results — mode: {mode}")
@@ -635,13 +657,14 @@ Examples:
         help="OCR engine: easyocr (default), paddle, or deepseek (VLM, needs API key)",
     )
 
-    ds_group = parser.add_argument_group("DeepSeek OCR options")
+    ds_group = parser.add_argument_group("Vision-LLM OCR options")
     ds_group.add_argument("--deepseek-api-key", type=str, default="",
-                          help="DeepSeek API key (or set DEEPSEEK_API_KEY env var)")
-    ds_group.add_argument("--deepseek-base-url", type=str, default="https://api.deepseek.com",
-                          help="DeepSeek-compatible API base URL (default: https://api.deepseek.com)")
-    ds_group.add_argument("--deepseek-model", type=str, default="deepseek-chat",
-                          help="Vision model name (default: deepseek-chat)")
+                          help="API key (or set GOOGLE_API_KEY / DEEPSEEK_API_KEY env var)")
+    ds_group.add_argument("--deepseek-base-url", type=str,
+                          default="https://generativelanguage.googleapis.com/v1beta/openai/",
+                          help="OpenAI-compatible vision API base URL")
+    ds_group.add_argument("--deepseek-model", type=str, default="gemini-2.0-flash",
+                          help="Vision model name (default: gemini-2.0-flash)")
 
     args = parser.parse_args()
 
