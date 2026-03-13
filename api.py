@@ -90,17 +90,9 @@ db.init_db()
 Path(_LOGOS_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def _sync_logos_dir_to_db() -> None:
-    """Scan logos/ directory and auto-register any subdirectory not yet in the DB.
-
-    Detection method is looked up from labels.yaml if present, otherwise
-    defaults to 'both'.  Reference images are counted from the folder.
-    """
+def _load_labels_method_map() -> Dict[str, str]:
+    """Read labels.yaml and return {logo_id_lower: detection_method} mapping."""
     import yaml
-
-    logos_root = Path(_LOGOS_DIR)
-    if not logos_root.is_dir():
-        return
 
     labels_file = Path(_os.getenv("BA_LABELS_FILE", str(_SCRIPT_DIR / "labels.yaml")))
     method_map: Dict[str, str] = {}
@@ -109,7 +101,31 @@ def _sync_logos_dir_to_db() -> None:
             raw = yaml.safe_load(f)
         if isinstance(raw, dict):
             for name, method in raw.items():
-                method_map[str(name).strip().lower()] = str(method).strip().lower()
+                m = str(method).strip().lower()
+                if m not in ("ocr", "detector", "both"):
+                    m = "both"
+                method_map[str(name).strip().lower()] = m
+    return method_map
+
+
+def _resolve_detection_method(logo_id: str, explicit: Optional[str] = None) -> str:
+    """Return the detection method for a logo.
+
+    Priority: explicit value > labels.yaml entry > 'both' fallback.
+    """
+    if explicit and explicit in ("ocr", "detector", "both"):
+        return explicit
+    return _load_labels_method_map().get(logo_id.lower(), "both")
+
+
+def _sync_logos_dir_to_db() -> None:
+    """Scan logos/ directory and auto-register any subdirectory not yet in the DB.
+
+    Detection method is resolved from labels.yaml via ``_resolve_detection_method``.
+    """
+    logos_root = Path(_LOGOS_DIR)
+    if not logos_root.is_dir():
+        return
 
     for d in sorted(logos_root.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
@@ -118,9 +134,7 @@ def _sync_logos_dir_to_db() -> None:
         if db.get_logo(logo_id):
             continue
         ref_count = len([p for p in d.iterdir() if p.suffix.lower() in _IMAGE_EXTS])
-        detection_method = method_map.get(logo_id.lower(), "both")
-        if detection_method not in ("ocr", "detector", "both"):
-            detection_method = "both"
+        detection_method = _resolve_detection_method(logo_id)
         display_name = logo_id.replace("_", " ").title()
         db.create_logo(logo_id, display_name, detection_method, reference_count=ref_count)
         log.info("Auto-registered logo '%s' (%d refs, method=%s)", logo_id, ref_count, detection_method)
@@ -207,11 +221,13 @@ class LogoStatOut(BaseModel):
 async def register_logo(
     logo_id: str = Form(..., description="Unique logo identifier (e.g. 'emirates')"),
     name: str = Form(..., description="Display name"),
-    detection_method: str = Form(default="both", description="ocr | detector | both"),
+    detection_method: Optional[str] = Form(
+        default=None,
+        description="ocr | detector | both (defaults to labels.yaml entry, then 'both')",
+    ),
     images: List[UploadFile] = File(default=[], description="Reference logo images"),
 ):
-    if detection_method not in ("ocr", "detector", "both"):
-        raise HTTPException(422, "detection_method must be ocr, detector, or both")
+    resolved_method = _resolve_detection_method(logo_id, detection_method)
     if db.get_logo(logo_id):
         raise HTTPException(409, f"Logo '{logo_id}' already exists")
 
@@ -219,7 +235,7 @@ async def register_logo(
     logo_dir.mkdir(parents=True, exist_ok=True)
     saved = _save_uploaded_images(images, logo_dir)
 
-    logo = db.create_logo(logo_id, name, detection_method, reference_count=saved)
+    logo = db.create_logo(logo_id, name, resolved_method, reference_count=saved)
     return logo
 
 
@@ -395,26 +411,13 @@ def health():
 
 def _auto_register_logos(logo_ids: List[str]) -> None:
     """For each logo_id that has a subdirectory in logos/ but is missing from the DB,
-    register it automatically (same logic as startup sync)."""
-    import yaml
-
-    labels_file = Path(_os.getenv("BA_LABELS_FILE", str(_SCRIPT_DIR / "labels.yaml")))
-    method_map: Dict[str, str] = {}
-    if labels_file.exists() and labels_file.suffix.lower() in (".yaml", ".yml"):
-        with open(labels_file) as f:
-            raw = yaml.safe_load(f)
-        if isinstance(raw, dict):
-            for name, method in raw.items():
-                method_map[str(name).strip().lower()] = str(method).strip().lower()
-
+    register it automatically using detection method from labels.yaml."""
     for lid in logo_ids:
         logo_dir = Path(_LOGOS_DIR) / lid
         if not logo_dir.is_dir():
             continue
         ref_count = len([p for p in logo_dir.iterdir() if p.suffix.lower() in _IMAGE_EXTS])
-        detection_method = method_map.get(lid.lower(), "both")
-        if detection_method not in ("ocr", "detector", "both"):
-            detection_method = "both"
+        detection_method = _resolve_detection_method(lid)
         display_name = lid.replace("_", " ").title()
         db.create_logo(lid, display_name, detection_method, reference_count=ref_count)
         log.info("Auto-registered logo '%s' from logos dir (%d refs, method=%s)",
