@@ -1,14 +1,14 @@
-google: both
-# coca cola: both
-# budweiser: both
-# toyota: both
-hyundai: both
-emirates: both
-aramco: both
-dpworld: both
-sobha: both
-# flipkart: both
-royalstag: both
-# apollo: both
-# livpure: both
-marriot: both
+google_pixel: ocr
+# coca cola: ocr
+# budweiser: ocr
+# toyota: ocr
+hyundai: ocr
+emirates: ocr
+aramco: ocr
+dp_world: ocr
+sobha_realty: ocr
+# flipkart: ocr
+royal_stag: ocr
+# apollo: ocr
+# livpure: ocr
+marriot_bonvoy: ocr

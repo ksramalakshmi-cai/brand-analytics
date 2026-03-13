@@ -623,7 +623,7 @@ Examples:
         help="OCR language(s), comma-separated (default: en)",
     )
     label_group.add_argument(
-        "--ocr-match-threshold", type=float, default=0.8,
+        "--ocr-match-threshold", type=float, default=0.5,
         help="Min fuzzy-match ratio to count as brand match (default: 0.5)",
     )
     label_group.add_argument(
