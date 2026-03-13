@@ -82,9 +82,104 @@ _S3_BUCKET = _os.getenv("BA_S3_BUCKET", "")
 _S3_PREFIX = _os.getenv("BA_S3_PREFIX", "annotated-videos/")
 _MAX_WORKERS = int(_os.getenv("BA_MAX_WORKERS", "2"))
 
+# S3 location for logo reference images
+_LOGOS_S3_BUCKET = _os.getenv("BA_LOGOS_S3_BUCKET", "brand-analytics-assets")
+_LOGOS_S3_PREFIX = _os.getenv("BA_LOGOS_S3_PREFIX", "logos/")
+
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 
 _executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
+
+
+# ── S3 logo helpers ───────────────────────────────────────────────────────
+
+def _s3_client():
+    import boto3
+    return boto3.client("s3")
+
+
+def _upload_logo_images_to_s3(images: List[UploadFile], logo_id: str) -> int:
+    """Upload multipart images to ``s3://BUCKET/logos/<logo_id>/``."""
+    s3 = _s3_client()
+    saved = 0
+    for img in images:
+        if not img.filename:
+            continue
+        ext = Path(img.filename).suffix.lower()
+        if ext not in _IMAGE_EXTS:
+            continue
+        key = f"{_LOGOS_S3_PREFIX}{logo_id}/{img.filename}"
+        s3.upload_fileobj(img.file, _LOGOS_S3_BUCKET, key)
+        saved += 1
+    return saved
+
+
+def _count_s3_logo_images(logo_id: str) -> int:
+    """Count image files under ``logos/<logo_id>/`` in S3."""
+    s3 = _s3_client()
+    prefix = f"{_LOGOS_S3_PREFIX}{logo_id}/"
+    paginator = s3.get_paginator("list_objects_v2")
+    count = 0
+    for page in paginator.paginate(Bucket=_LOGOS_S3_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            if Path(obj["Key"]).suffix.lower() in _IMAGE_EXTS:
+                count += 1
+    return count
+
+
+def _list_s3_logo_dirs() -> List[str]:
+    """Return logo_id values that have folders in ``s3://BUCKET/logos/``."""
+    s3 = _s3_client()
+    resp = s3.list_objects_v2(
+        Bucket=_LOGOS_S3_BUCKET,
+        Prefix=_LOGOS_S3_PREFIX,
+        Delimiter="/",
+    )
+    dirs: List[str] = []
+    for cp in resp.get("CommonPrefixes", []):
+        name = cp["Prefix"][len(_LOGOS_S3_PREFIX):].rstrip("/")
+        if name:
+            dirs.append(name)
+    return sorted(dirs)
+
+
+def _s3_logo_dir_exists(logo_id: str) -> bool:
+    """Check whether at least one object exists under the logo prefix."""
+    s3 = _s3_client()
+    prefix = f"{_LOGOS_S3_PREFIX}{logo_id}/"
+    resp = s3.list_objects_v2(Bucket=_LOGOS_S3_BUCKET, Prefix=prefix, MaxKeys=1)
+    return resp.get("KeyCount", 0) > 0
+
+
+def _download_s3_logos_to_local(logo_ids: List[str], dest_root: str) -> None:
+    """Download reference images for given logos from S3 into local directory."""
+    s3 = _s3_client()
+    for lid in logo_ids:
+        prefix = f"{_LOGOS_S3_PREFIX}{lid}/"
+        local_dir = Path(dest_root) / lid
+        local_dir.mkdir(parents=True, exist_ok=True)
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=_LOGOS_S3_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                fname = Path(key).name
+                if not fname or Path(fname).suffix.lower() not in _IMAGE_EXTS:
+                    continue
+                local_path = local_dir / fname
+                if not local_path.exists():
+                    s3.download_file(_LOGOS_S3_BUCKET, key, str(local_path))
+
+
+def _delete_s3_logo_dir(logo_id: str) -> None:
+    """Remove all objects under ``logos/<logo_id>/`` in S3."""
+    s3 = _s3_client()
+    prefix = f"{_LOGOS_S3_PREFIX}{logo_id}/"
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=_LOGOS_S3_BUCKET, Prefix=prefix):
+        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if objects:
+            s3.delete_objects(Bucket=_LOGOS_S3_BUCKET, Delete={"Objects": objects})
+
 
 db.init_db()
 Path(_LOGOS_DIR).mkdir(parents=True, exist_ok=True)
@@ -119,25 +214,26 @@ def _resolve_detection_method(logo_id: str, explicit: Optional[str] = None) -> s
 
 
 def _sync_logos_dir_to_db() -> None:
-    """Scan logos/ directory and auto-register any subdirectory not yet in the DB.
+    """Scan ``s3://BUCKET/logos/`` and auto-register any logo folder not yet in MongoDB.
 
     Detection method is resolved from labels.yaml via ``_resolve_detection_method``.
     """
-    logos_root = Path(_LOGOS_DIR)
-    if not logos_root.is_dir():
+    try:
+        s3_dirs = _list_s3_logo_dirs()
+    except Exception as exc:
+        log.warning("Could not list S3 logos dir: %s", exc)
         return
 
-    for d in sorted(logos_root.iterdir()):
-        if not d.is_dir() or d.name.startswith("."):
-            continue
-        logo_id = d.name
+    for logo_id in s3_dirs:
         if db.get_logo(logo_id):
             continue
-        ref_count = len([p for p in d.iterdir() if p.suffix.lower() in _IMAGE_EXTS])
+        ref_count = _count_s3_logo_images(logo_id)
+        s3_path = f"s3://{_LOGOS_S3_BUCKET}/{_LOGOS_S3_PREFIX}{logo_id}/"
         detection_method = _resolve_detection_method(logo_id)
         display_name = logo_id.replace("_", " ").title()
-        db.create_logo(logo_id, display_name, detection_method, reference_count=ref_count)
-        log.info("Auto-registered logo '%s' (%d refs, method=%s)", logo_id, ref_count, detection_method)
+        db.create_logo(logo_id, display_name, detection_method,
+                        reference_count=ref_count, s3_path=s3_path)
+        log.info("Auto-registered logo '%s' from S3 (%d refs, method=%s)", logo_id, ref_count, detection_method)
         print(f"  [sync] Registered logo '{logo_id}' ({ref_count} images, method={detection_method})")
 
 
@@ -166,6 +262,7 @@ class LogoOut(BaseModel):
     name: str
     detection_method: str
     reference_count: int
+    s3_path: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -231,11 +328,11 @@ async def register_logo(
     if db.get_logo(logo_id):
         raise HTTPException(409, f"Logo '{logo_id}' already exists")
 
-    logo_dir = Path(_LOGOS_DIR) / logo_id
-    logo_dir.mkdir(parents=True, exist_ok=True)
-    saved = _save_uploaded_images(images, logo_dir)
+    saved = _upload_logo_images_to_s3(images, logo_id)
+    s3_path = f"s3://{_LOGOS_S3_BUCKET}/{_LOGOS_S3_PREFIX}{logo_id}/"
 
-    logo = db.create_logo(logo_id, name, resolved_method, reference_count=saved)
+    logo = db.create_logo(logo_id, name, resolved_method,
+                          reference_count=saved, s3_path=s3_path)
     return logo
 
 
@@ -271,12 +368,9 @@ async def update_logo(
     if detection_method is not None:
         kwargs["detection_method"] = detection_method
 
-    logo_dir = Path(_LOGOS_DIR) / logo_id
-    logo_dir.mkdir(parents=True, exist_ok=True)
-    added = _save_uploaded_images(images, logo_dir)
+    added = _upload_logo_images_to_s3(images, logo_id)
     if added:
-        ref_count = len([p for p in logo_dir.iterdir() if p.suffix.lower() in _IMAGE_EXTS])
-        kwargs["reference_count"] = ref_count
+        kwargs["reference_count"] = _count_s3_logo_images(logo_id)
 
     return db.update_logo(logo_id, **kwargs)
 
@@ -285,6 +379,11 @@ async def update_logo(
 def delete_logo(logo_id: str):
     if not db.delete_logo(logo_id):
         raise HTTPException(404, f"Logo '{logo_id}' not found")
+    try:
+        _delete_s3_logo_dir(logo_id)
+    except Exception as exc:
+        log.warning("Failed to delete S3 logo dir for '%s': %s", logo_id, exc)
+    # Clean up local cache too
     logo_dir = Path(_LOGOS_DIR) / logo_id
     if logo_dir.is_dir():
         shutil.rmtree(logo_dir, ignore_errors=True)
@@ -312,9 +411,9 @@ def submit_video(req: ProcessRequest):
         still_unknown = [lid for lid in unknown if not db.get_logo(lid)]
         if still_unknown:
             raise HTTPException(422, detail={
-                "error": "Unregistered logo_id(s) — no reference directory found",
+                "error": "Unregistered logo_id(s) — no S3 folder found",
                 "unknown": still_unknown,
-                "hint": f"Create a directory under {_LOGOS_DIR}/<logo_id> with reference images, or use POST /logos",
+                "hint": f"Upload images to s3://{_LOGOS_S3_BUCKET}/{_LOGOS_S3_PREFIX}<logo_id>/ or use POST /logos",
                 "registered": [l["logo_id"] for l in db.list_logos()],
             })
 
@@ -419,33 +518,19 @@ def health():
 # =====================================================================
 
 def _auto_register_logos(logo_ids: List[str]) -> None:
-    """For each logo_id that has a subdirectory in logos/ but is missing from the DB,
+    """For each logo_id that has a folder in S3 but is missing from the DB,
     register it automatically using detection method from labels.yaml."""
     for lid in logo_ids:
-        logo_dir = Path(_LOGOS_DIR) / lid
-        if not logo_dir.is_dir():
+        if not _s3_logo_dir_exists(lid):
             continue
-        ref_count = len([p for p in logo_dir.iterdir() if p.suffix.lower() in _IMAGE_EXTS])
+        ref_count = _count_s3_logo_images(lid)
+        s3_path = f"s3://{_LOGOS_S3_BUCKET}/{_LOGOS_S3_PREFIX}{lid}/"
         detection_method = _resolve_detection_method(lid)
         display_name = lid.replace("_", " ").title()
-        db.create_logo(lid, display_name, detection_method, reference_count=ref_count)
-        log.info("Auto-registered logo '%s' from logos dir (%d refs, method=%s)",
+        db.create_logo(lid, display_name, detection_method,
+                        reference_count=ref_count, s3_path=s3_path)
+        log.info("Auto-registered logo '%s' from S3 (%d refs, method=%s)",
                  lid, ref_count, detection_method)
-
-
-def _save_uploaded_images(images: List[UploadFile], dest_dir: Path) -> int:
-    saved = 0
-    for img in images:
-        if not img.filename:
-            continue
-        ext = Path(img.filename).suffix.lower()
-        if ext not in _IMAGE_EXTS:
-            continue
-        out_path = dest_dir / img.filename
-        with open(out_path, "wb") as f:
-            shutil.copyfileobj(img.file, f)
-        saved += 1
-    return saved
 
 
 def _download_video(url: str) -> str:
@@ -582,6 +667,10 @@ def _process_video_job(job_id: str) -> None:
         t0 = time.time()
 
         local_path = _download_video(video_url)
+
+        # Download target logo reference images from S3 into local cache
+        _download_s3_logos_to_local(target_logos, _LOGOS_DIR)
+
         label_config = _build_label_config_from_db(target_logos)
         name_to_id = _name_to_logo_id(target_logos)
 
