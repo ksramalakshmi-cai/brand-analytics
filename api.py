@@ -347,6 +347,15 @@ def get_job(job_id: str):
 def get_stats(logo_ids: Optional[str] = None):
     """Aggregated visibility stats.  ``?logo_ids=a,b`` to filter."""
     id_list = [s.strip() for s in logo_ids.split(",") if s.strip()] if logo_ids else None
+
+    # Recompute stats fresh so stale/zero rows are corrected
+    target_ids = id_list or [l["logo_id"] for l in db.list_logos()]
+    for lid in target_ids:
+        try:
+            db.recompute_logo_stats(lid)
+        except Exception:
+            pass
+
     rows = db.get_logo_stats(id_list)
     out: List[LogoStatOut] = []
     for r in rows:
@@ -634,13 +643,6 @@ def _process_video_job(job_id: str) -> None:
             s3_key = f"{_S3_PREFIX}{video_id}_annotated.mp4"
             s3_url = _upload_to_s3(annotated_path, s3_key)
 
-        # Recompute aggregate stats for every target logo
-        for lid in target_logos:
-            try:
-                db.recompute_logo_stats(lid)
-            except Exception as se:
-                log.warning("Stats recomputation failed for %s: %s", lid, se)
-
         db.update_job_status(
             job_id, "completed",
             result_json=json.dumps(result, default=str),
@@ -650,6 +652,14 @@ def _process_video_job(job_id: str) -> None:
             processing_time_sec=elapsed,
             completed_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         )
+
+        # Recompute aggregate stats AFTER the job is marked completed,
+        # because the query filters on j.status = 'completed'.
+        for lid in target_logos:
+            try:
+                db.recompute_logo_stats(lid)
+            except Exception as se:
+                log.warning("Stats recomputation failed for %s: %s", lid, se)
 
     except Exception as exc:
         log.exception("Job %s failed", job_id)
