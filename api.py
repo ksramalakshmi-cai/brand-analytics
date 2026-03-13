@@ -185,6 +185,28 @@ def _delete_s3_logo_dir(logo_id: str) -> None:
             s3.delete_objects(Bucket=_LOGOS_S3_BUCKET, Delete={"Objects": objects})
 
 
+def _list_s3_video_files(bucket: str, prefix: str) -> List[Dict[str, str]]:
+    """List video files under an S3 prefix. Returns [{key, filename}, ...]."""
+    s3 = _s3_client()
+    paginator = s3.get_paginator("list_objects_v2")
+    results: List[Dict[str, str]] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if Path(key).suffix.lower() in _VIDEO_EXTS:
+                results.append({"key": key, "filename": Path(key).stem})
+    return results
+
+
+def _is_s3_folder(url: str) -> bool:
+    """Return True if the URL looks like an S3 folder (ends with / or has no extension)."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "s3":
+        return False
+    path = parsed.path.lstrip("/")
+    return path.endswith("/") or "." not in Path(path).name
+
+
 def _upload_run_outputs_to_s3(local_dir: str, s3_folder_name: str) -> str:
     """Upload the entire pipeline output directory to S3 under ``runs/<folder>/``.
 
@@ -288,9 +310,15 @@ class LogoOut(BaseModel):
     updated_at: str
 
 
+_VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".ts", ".m4v"}
+
+
 class ProcessRequest(BaseModel):
-    url: str = Field(..., description="Video URL — s3://bucket/key, CloudFront, or HTTPS")
-    video_id: str = Field(..., description="Unique post / video identifier (dedup key)")
+    url: str = Field(..., description="Video URL or S3 folder — s3://bucket/key or s3://bucket/prefix/")
+    video_id: Optional[str] = Field(
+        default=None,
+        description="Unique video identifier (auto-derived per file when url is an S3 folder)",
+    )
     engagements: int = Field(default=0, description="Engagement count for weighting")
     target_logos: List[str] = Field(
         ..., min_length=1,
@@ -303,6 +331,12 @@ class JobOut(BaseModel):
     video_id: str
     status: str
     message: Optional[str] = None
+
+
+class BatchJobOut(BaseModel):
+    total: int
+    jobs: List[JobOut]
+    skipped: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class JobDetailOut(BaseModel):
@@ -415,18 +449,9 @@ def delete_logo(logo_id: str):
 # 2. VIDEO PROCESSING (async)
 # =====================================================================
 
-@app.post("/process", response_model=JobOut, status_code=202)
+@app.post("/process", status_code=202)
 def submit_video(req: ProcessRequest):
-    existing = db.get_job_by_video_id(req.video_id)
-    if existing:
-        return JobOut(
-            job_id=existing["job_id"],
-            video_id=req.video_id,
-            status=existing["status"],
-            message="Duplicate video_id — returning existing job",
-        )
-
-    # Auto-register any target logos that have a directory but aren't in the DB yet
+    # Auto-register any target logos that have an S3 folder but aren't in the DB yet
     unknown = [lid for lid in req.target_logos if not db.get_logo(lid)]
     if unknown:
         _auto_register_logos(unknown)
@@ -439,17 +464,60 @@ def submit_video(req: ProcessRequest):
                 "registered": [l["logo_id"] for l in db.list_logos()],
             })
 
+    # If S3 folder → expand into individual video files
+    if _is_s3_folder(req.url):
+        parsed = urllib.parse.urlparse(req.url)
+        bucket = parsed.netloc
+        prefix = parsed.path.lstrip("/")
+        if not prefix.endswith("/"):
+            prefix += "/"
+        video_files = _list_s3_video_files(bucket, prefix)
+        if not video_files:
+            raise HTTPException(404, f"No video files found in {req.url}")
+        return _submit_batch(video_files, bucket, req)
+
+    # Single video
+    video_id = req.video_id or Path(urllib.parse.urlparse(req.url).path).stem or uuid.uuid4().hex
+    return _submit_single(req.url, video_id, req)
+
+
+def _submit_single(url: str, video_id: str, req: ProcessRequest) -> JobOut:
+    """Create and queue a single video processing job."""
+    existing = db.get_job_by_video_id(video_id)
+    if existing:
+        return JobOut(
+            job_id=existing["job_id"],
+            video_id=video_id,
+            status=existing["status"],
+            message="Duplicate video_id — returning existing job",
+        )
     job_id = uuid.uuid4().hex
-    db.create_job(job_id, req.video_id, req.url, req.engagements, req.target_logos)
-
+    db.create_job(job_id, video_id, url, req.engagements, req.target_logos)
     _executor.submit(_process_video_job, job_id)
+    return JobOut(job_id=job_id, video_id=video_id, status="pending",
+                  message="Video processing queued")
 
-    return JobOut(
-        job_id=job_id,
-        video_id=req.video_id,
-        status="pending",
-        message="Video processing queued",
-    )
+
+def _submit_batch(
+    video_files: List[Dict[str, str]], bucket: str, req: ProcessRequest,
+) -> BatchJobOut:
+    """Create a job for each video file found in the S3 folder."""
+    jobs: List[JobOut] = []
+    skipped: List[Dict[str, str]] = []
+    for vf in video_files:
+        file_url = f"s3://{bucket}/{vf['key']}"
+        video_id = vf["filename"]
+        existing = db.get_job_by_video_id(video_id)
+        if existing:
+            skipped.append({"video_id": video_id, "reason": "duplicate",
+                            "job_id": existing["job_id"]})
+            continue
+        job_id = uuid.uuid4().hex
+        db.create_job(job_id, video_id, file_url, req.engagements, req.target_logos)
+        _executor.submit(_process_video_job, job_id)
+        jobs.append(JobOut(job_id=job_id, video_id=video_id, status="pending",
+                           message="Video processing queued"))
+    return BatchJobOut(total=len(jobs), jobs=jobs, skipped=skipped)
 
 
 @app.get("/jobs/{job_id}", response_model=JobDetailOut)
