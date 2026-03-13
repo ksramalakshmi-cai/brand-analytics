@@ -22,10 +22,10 @@ import cv2
 import numpy as np
 
 
-_GEMINI_MODEL = os.getenv("BA_EVAL_MODEL", "gemini-3-flash")
+_GEMINI_MODEL = os.getenv("BA_EVAL_MODEL", "gemini-3.1-flash-lite-preview")
 _MLFLOW_TRACKING_URI = os.getenv("BA_MLFLOW_TRACKING_URI", "http://34.55.97.182:5000")
 _MLFLOW_EXPERIMENT = os.getenv("BA_MLFLOW_EXPERIMENT", "brand-visibility-evals")
-_EVAL_FRAME_COUNT = int(os.getenv("BA_EVAL_FRAME_COUNT", "10"))
+_EVAL_FRAME_COUNT = int(os.getenv("BA_EVAL_FRAME_COUNT", "100"))
 _EVAL_BATCH_SIZE = int(os.getenv("BA_EVAL_BATCH_SIZE", "10"))
 
 _DEFAULT_BRAND_PROMPT = """\
