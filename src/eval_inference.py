@@ -14,6 +14,7 @@ import json
 import os
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -25,6 +26,7 @@ _GEMINI_MODEL = os.getenv("BA_EVAL_MODEL", "gemini-3-flash")
 _MLFLOW_TRACKING_URI = os.getenv("BA_MLFLOW_TRACKING_URI", "http://34.55.97.182:5000")
 _MLFLOW_EXPERIMENT = os.getenv("BA_MLFLOW_EXPERIMENT", "brand-visibility-evals")
 _EVAL_FRAME_COUNT = int(os.getenv("BA_EVAL_FRAME_COUNT", "10"))
+_EVAL_BATCH_SIZE = int(os.getenv("BA_EVAL_BATCH_SIZE", "10"))
 
 _DEFAULT_BRAND_PROMPT = """\
 You are a brand recognition expert. Look at this image carefully and list ALL \
@@ -173,21 +175,19 @@ def run_eval(
         return None
 
     labels_info = f" for {target_logos}" if target_logos else ""
-    print(f"  [eval] Evaluating {len(frames)} frames with {_GEMINI_MODEL}{labels_info} ...")
+    sorted_indices = sorted(frames.keys())
+    print(f"  [eval] Evaluating {len(sorted_indices)} frames with {_GEMINI_MODEL}"
+          f"{labels_info} (batch_size={_EVAL_BATCH_SIZE}) ...")
 
-    table_rows: List[Dict[str, Any]] = []
-
-    for idx in sorted(frames.keys()):
+    def _eval_single_frame(idx: int) -> Dict[str, Any]:
         frame_bgr, timestamp = frames[idx]
         gemini_brands = _call_gemini(frame_bgr, key, prompt)
         ocr_brands = _ocr_brands_for_frame(idx, detection_details)
-
         gemini_set = set(gemini_brands)
         matched = gemini_set & ocr_brands
         total_gt = len(gemini_set)
         score = round((len(matched) / total_gt) * 100, 2) if total_gt > 0 else 100.0
-
-        table_rows.append({
+        return {
             "frame_index": idx,
             "timestamp_sec": timestamp,
             "brands_seen_gemini": ", ".join(sorted(gemini_set)) or "(none)",
@@ -196,7 +196,41 @@ def run_eval(
             "total_gemini": total_gt,
             "total_ocr": len(ocr_brands),
             "score": score,
-        })
+        }
+
+    table_rows: List[Dict[str, Any]] = []
+
+    for batch_start in range(0, len(sorted_indices), _EVAL_BATCH_SIZE):
+        batch = sorted_indices[batch_start:batch_start + _EVAL_BATCH_SIZE]
+        batch_num = batch_start // _EVAL_BATCH_SIZE + 1
+        total_batches = (len(sorted_indices) + _EVAL_BATCH_SIZE - 1) // _EVAL_BATCH_SIZE
+        print(f"  [eval] Batch {batch_num}/{total_batches}: "
+              f"{len(batch)} frames in parallel ...")
+
+        batch_results: Dict[int, Dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=_EVAL_BATCH_SIZE) as pool:
+            futures = {pool.submit(_eval_single_frame, idx): idx for idx in batch}
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    batch_results[idx] = future.result()
+                except Exception as exc:
+                    print(f"  [eval] Frame {idx} failed: {exc}")
+                    batch_results[idx] = {
+                        "frame_index": idx,
+                        "timestamp_sec": frames[idx][1],
+                        "brands_seen_gemini": "(error)",
+                        "brands_extracted_ocr": ", ".join(
+                            sorted(_ocr_brands_for_frame(idx, detection_details))
+                        ) or "(none)",
+                        "matched": "(error)",
+                        "total_gemini": 0,
+                        "total_ocr": len(_ocr_brands_for_frame(idx, detection_details)),
+                        "score": 0.0,
+                    }
+
+        for idx in batch:
+            table_rows.append(batch_results[idx])
 
     avg_score = (
         round(sum(r["score"] for r in table_rows) / len(table_rows), 2)
