@@ -70,7 +70,7 @@ log = logging.getLogger("brand_analytics")
 # ── Server defaults (override via env) ────────────────────────────────────
 _LOGOS_DIR = _os.getenv("BA_LOGOS_DIR", str(_SCRIPT_DIR / "logos"))
 _DETECTOR = _os.getenv("BA_DETECTOR", "reference")
-_MODE = _os.getenv("BA_MODE", "both")
+_MODE = _os.getenv("BA_MODE", "ocr")
 _OCR_BACKEND = _os.getenv("BA_OCR_BACKEND", "easyocr")
 _FPS = float(_os.getenv("BA_FPS", "5.0"))
 _DEVICE = _os.getenv("BA_DEVICE", "")
@@ -219,7 +219,7 @@ def _load_labels_method_map() -> Dict[str, str]:
             for name, method in raw.items():
                 m = str(method).strip().lower()
                 if m not in ("ocr", "detector", "both"):
-                    m = "both"
+                    m = "ocr"
                 method_map[str(name).strip().lower()] = m
     return method_map
 
@@ -231,7 +231,7 @@ def _resolve_detection_method(logo_id: str, explicit: Optional[str] = None) -> s
     """
     if explicit and explicit in ("ocr", "detector", "both"):
         return explicit
-    return _load_labels_method_map().get(logo_id.lower(), "both")
+    return _load_labels_method_map().get(logo_id.lower(), "ocr")
 
 
 def _sync_logos_dir_to_db() -> None:
