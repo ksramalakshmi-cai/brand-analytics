@@ -523,6 +523,7 @@ def run_pipeline(
                 detection_details=detection_details,
                 total_frames=estimated_frames,
                 sample_fps=config.fps,
+                target_logos=list(all_labels) if all_labels else None,
             )
             if eval_rows is not None:
                 result["eval_results"] = eval_rows

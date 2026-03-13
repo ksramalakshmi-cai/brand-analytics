@@ -26,7 +26,7 @@ _MLFLOW_TRACKING_URI = os.getenv("BA_MLFLOW_TRACKING_URI", "http://34.55.97.182:
 _MLFLOW_EXPERIMENT = os.getenv("BA_MLFLOW_EXPERIMENT", "brand-visibility-evals")
 _EVAL_FRAME_COUNT = int(os.getenv("BA_EVAL_FRAME_COUNT", "10"))
 
-_BRAND_DETECTION_PROMPT = """\
+_DEFAULT_BRAND_PROMPT = """\
 You are a brand recognition expert. Look at this image carefully and list ALL \
 brand names, logos, and company names that are visible — even partially.
 Return ONLY a JSON array of brand name strings, lowercase. No explanation.
@@ -34,12 +34,25 @@ Example: ["nike", "coca cola", "emirates"]
 If no brands are visible return an empty array: []"""
 
 
+def _build_prompt(target_logos: Optional[List[str]] = None) -> str:
+    if not target_logos:
+        return _DEFAULT_BRAND_PROMPT
+    labels_str = json.dumps([s.strip().lower() for s in target_logos if s.strip()])
+    return (
+        f"You are a brand recognition expert. Consider ONLY these brands: {labels_str}.\n"
+        "Look at this image and identify which of these brands (logos or text) are visible — even partially.\n"
+        "Return ONLY a JSON array of brand name strings from the list above, lowercase. "
+        "Do not include brands outside this list. No explanation.\n"
+        'If none of these brands are visible return an empty array: []'
+    )
+
+
 def _image_to_base64(image: np.ndarray) -> str:
     _, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return base64.b64encode(buf.tobytes()).decode("utf-8")
 
 
-def _call_gemini(image: np.ndarray, api_key: str) -> List[str]:
+def _call_gemini(image: np.ndarray, api_key: str, prompt: str) -> List[str]:
     """Send a single frame to Gemini and return list of brand names."""
     import google.generativeai as genai
 
@@ -49,7 +62,7 @@ def _call_gemini(image: np.ndarray, api_key: str) -> List[str]:
     b64 = _image_to_base64(image)
     response = model.generate_content(
         [
-            _BRAND_DETECTION_PROMPT,
+            prompt,
             {"mime_type": "image/jpeg", "data": b64},
         ],
         generation_config={"temperature": 0.0, "max_output_tokens": 1024},
@@ -132,6 +145,7 @@ def run_eval(
     total_frames: int,
     sample_fps: float = 5.0,
     api_key: Optional[str] = None,
+    target_logos: Optional[List[str]] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Run the Gemini eval arm and log results to MLflow.
 
@@ -149,6 +163,8 @@ def run_eval(
         print(f"  [eval] Skipping eval: {exc}")
         return None
 
+    prompt = _build_prompt(target_logos)
+
     indices = _sample_frame_indices(total_frames, _EVAL_FRAME_COUNT)
     frames = _extract_specific_frames(video_path, indices, sample_fps)
 
@@ -156,13 +172,14 @@ def run_eval(
         print("  [eval] No frames could be extracted for eval")
         return None
 
-    print(f"  [eval] Evaluating {len(frames)} frames with {_GEMINI_MODEL} ...")
+    labels_info = f" for {target_logos}" if target_logos else ""
+    print(f"  [eval] Evaluating {len(frames)} frames with {_GEMINI_MODEL}{labels_info} ...")
 
     table_rows: List[Dict[str, Any]] = []
 
     for idx in sorted(frames.keys()):
         frame_bgr, timestamp = frames[idx]
-        gemini_brands = _call_gemini(frame_bgr, key)
+        gemini_brands = _call_gemini(frame_bgr, key, prompt)
         ocr_brands = _ocr_brands_for_frame(idx, detection_details)
 
         gemini_set = set(gemini_brands)
@@ -194,6 +211,7 @@ def run_eval(
         mlflow.log_param("video_name", video_name)
         mlflow.log_param("video_path", video_path)
         mlflow.log_param("eval_model", _GEMINI_MODEL)
+        mlflow.log_param("target_logos", ", ".join(target_logos) if target_logos else "(all)")
         mlflow.log_param("frames_evaluated", len(table_rows))
         mlflow.log_param("total_frames_pipeline", total_frames)
 
