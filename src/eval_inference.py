@@ -200,12 +200,30 @@ def run_eval(
         mlflow.log_metric("avg_eval_score", avg_score)
         mlflow.log_metric("frames_evaluated", len(table_rows))
 
+        for i, row in enumerate(table_rows):
+            mlflow.log_metric("frame_score", row["score"], step=i)
+            mlflow.log_metric("brands_gemini_count", row["total_gemini"], step=i)
+            mlflow.log_metric("brands_ocr_count", row["total_ocr"], step=i)
+
+        # Log the full table — try artifact first, fall back to tags
         try:
             import pandas as pd
             df = pd.DataFrame(table_rows)
             mlflow.log_table(data=df, artifact_file="eval_results.json")
-        except ImportError:
-            mlflow.log_dict(table_rows, artifact_file="eval_results.json")
+        except Exception:
+            table_json = json.dumps(table_rows, default=str)
+            # MLflow tags have a 5000-char limit; truncate if needed
+            if len(table_json) <= 5000:
+                mlflow.set_tag("eval_table", table_json)
+            else:
+                mlflow.set_tag("eval_table_truncated", table_json[:4990] + "...]")
+            for i, row in enumerate(table_rows):
+                prefix = f"frame_{i}"
+                mlflow.set_tag(f"{prefix}_idx", str(row["frame_index"]))
+                mlflow.set_tag(f"{prefix}_ts", str(row["timestamp_sec"]))
+                mlflow.set_tag(f"{prefix}_gemini", row["brands_seen_gemini"])
+                mlflow.set_tag(f"{prefix}_ocr", row["brands_extracted_ocr"])
+                mlflow.set_tag(f"{prefix}_score", str(row["score"]))
 
     print(f"  [eval] Logged to MLflow experiment='{_MLFLOW_EXPERIMENT}' "
           f"run='{video_name}' avg_score={avg_score}%")
