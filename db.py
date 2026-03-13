@@ -155,6 +155,7 @@ def create_job(
         "error_message": None,
         "result_json": None,
         "annotated_video_s3_url": None,
+        "run_outputs_s3_url": None,
         "frames_analysed": None,
         "duration_sec": None,
         "processing_time_sec": None,
@@ -185,8 +186,9 @@ def get_job_by_video_id(video_id: str) -> Optional[Dict[str, Any]]:
 
 def update_job_status(job_id: str, status: str, **kwargs: Any) -> None:
     allowed_keys = {
-        "error_message", "annotated_video_s3_url", "frames_analysed",
-        "duration_sec", "processing_time_sec", "completed_at", "result_json",
+        "error_message", "annotated_video_s3_url", "run_outputs_s3_url",
+        "frames_analysed", "duration_sec", "processing_time_sec",
+        "completed_at", "result_json",
     }
     updates: Dict[str, Any] = {"status": status, "updated_at": _now()}
     for k, v in kwargs.items():

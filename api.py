@@ -86,6 +86,10 @@ _MAX_WORKERS = int(_os.getenv("BA_MAX_WORKERS", "2"))
 _LOGOS_S3_BUCKET = _os.getenv("BA_LOGOS_S3_BUCKET", "brand-analytics-assets")
 _LOGOS_S3_PREFIX = _os.getenv("BA_LOGOS_S3_PREFIX", "logos/")
 
+# S3 location for pipeline run outputs
+_RUNS_S3_BUCKET = _os.getenv("BA_RUNS_S3_BUCKET", "brand-analytics-assets")
+_RUNS_S3_PREFIX = _os.getenv("BA_RUNS_S3_PREFIX", "runs/")
+
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 
 _executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
@@ -179,6 +183,23 @@ def _delete_s3_logo_dir(logo_id: str) -> None:
         objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if objects:
             s3.delete_objects(Bucket=_LOGOS_S3_BUCKET, Delete={"Objects": objects})
+
+
+def _upload_run_outputs_to_s3(local_dir: str, s3_folder_name: str) -> str:
+    """Upload the entire pipeline output directory to S3 under ``runs/<folder>/``.
+
+    Returns the S3 URI prefix, e.g. ``s3://brand-analytics-assets/runs/<folder>/``.
+    """
+    s3 = _s3_client()
+    root = Path(local_dir)
+    prefix = f"{_RUNS_S3_PREFIX}{s3_folder_name}/"
+    for fpath in root.rglob("*"):
+        if not fpath.is_file():
+            continue
+        rel = fpath.relative_to(root).as_posix()
+        key = f"{prefix}{rel}"
+        s3.upload_file(str(fpath), _RUNS_S3_BUCKET, key)
+    return f"s3://{_RUNS_S3_BUCKET}/{prefix}"
 
 
 db.init_db()
@@ -293,6 +314,7 @@ class JobDetailOut(BaseModel):
     target_logos: List[str]
     error_message: Optional[str] = None
     annotated_video_s3_url: Optional[str] = None
+    run_outputs_s3_url: Optional[str] = None
     frames_analysed: Optional[int] = None
     duration_sec: Optional[float] = None
     processing_time_sec: Optional[float] = None
@@ -732,10 +754,24 @@ def _process_video_job(job_id: str) -> None:
             s3_key = f"{_S3_PREFIX}{video_id}_annotated.mp4"
             s3_url = _upload_to_s3(annotated_path, s3_key)
 
+        # Upload full run outputs folder to S3
+        run_outputs_s3_url = ""
+        run_dir = result.get("output_dir", "")
+        if run_dir and Path(run_dir).is_dir():
+            video_name = Path(video_url).stem or video_id
+            date_str = time.strftime("%Y%m%d")
+            folder_name = f"{job_id}_{video_name}_{date_str}"
+            try:
+                run_outputs_s3_url = _upload_run_outputs_to_s3(run_dir, folder_name)
+                log.info("Run outputs uploaded to %s", run_outputs_s3_url)
+            except Exception as ue:
+                log.warning("Run outputs S3 upload failed: %s", ue)
+
         db.update_job_status(
             job_id, "completed",
             result_json=json.dumps(result, default=str),
             annotated_video_s3_url=s3_url or None,
+            run_outputs_s3_url=run_outputs_s3_url or None,
             frames_analysed=result.get("frames_analysed"),
             duration_sec=result.get("media", {}).get("duration_sec"),
             processing_time_sec=elapsed,
