@@ -288,6 +288,10 @@ def get_stats(logo_ids: Optional[str] = None):
     out: List[LogoStatOut] = []
     for r in rows:
         per_video = db.get_per_video_breakdown(r["logo_id"])
+        avg_fcs = r.get("avg_fcs_score", 0)
+        total_play = r.get("total_play_count", 0)
+        log.info("[stats] %s: avg_fcs_score=%.4f total_play_count=%s", r["logo_id"], avg_fcs, total_play)
+        print(f"  [stats] {r['logo_id']}: avg_fcs_score={avg_fcs:.4f}  total_play_count={total_play}")
         out.append(LogoStatOut(
             logo_id=r["logo_id"],
             name=r["name"],
@@ -300,14 +304,37 @@ def get_stats(logo_ids: Optional[str] = None):
                 "avg_visibility_pct": r["avg_visibility_pct"],
                 "avg_confidence": r["avg_confidence"],
                 "avg_area_pct": r["avg_area_pct"],
-                "avg_fcs_score": r.get("avg_fcs_score", 0),
-                "total_play_count": r.get("total_play_count", 0),
+                "avg_fcs_score": avg_fcs,
+                "total_play_count": total_play,
                 "total_engagements": r["total_engagements"],
                 "weighted_visibility_score": r["weighted_visibility_score"],
             },
             per_video=per_video,
         ))
+    # Save metrics to file
+    _save_stats_metrics(out)
     return out
+
+
+def _save_stats_metrics(stats_out: List[LogoStatOut]) -> None:
+    """Write stats response to outputs/stats_export.json for persistence."""
+    out_dir = Path(_os.getenv("BA_OUTPUT_DIR", str(_SCRIPT_DIR / "outputs")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "stats_export.json"
+    payload = [
+        {
+            "logo_id": s.logo_id,
+            "name": s.name,
+            "avg_fcs_score": s.aggregate.get("avg_fcs_score", 0),
+            "total_play_count": s.aggregate.get("total_play_count", 0),
+            "aggregate": s.aggregate,
+            "per_video": s.per_video,
+        }
+        for s in stats_out
+    ]
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+    log.info("Stats metrics saved to %s", path)
 
 
 @app.get("/health")

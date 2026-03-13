@@ -21,9 +21,12 @@ for _k in ("MKL_NUM_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXP
 _os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 import argparse
+import csv
+import json
 import sys
 import time
 from pathlib import Path
+from typing import Dict, Any
 from typing import List, Optional
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -102,6 +105,34 @@ def _parse_txt_labels(path: Path, lc: LabelConfig) -> None:
             line = line.strip().rstrip(",").strip()
             if line and not line.startswith("#"):
                 lc.both.append(line)
+
+
+def _merge_fcs_into_brand_summary_json(path: Path, brands_result: Dict[str, Any]) -> None:
+    """Add metric_inputs and fcs_breakdown to each brand in existing brand_summary.json."""
+    with open(path) as f:
+        payload = json.load(f)
+    for label, data in brands_result.items():
+        if label in payload.get("brands", {}):
+            payload["brands"][label]["metric_inputs"] = data.get("metric_inputs", {})
+            payload["brands"][label]["fcs_breakdown"] = data.get("fcs_breakdown", {})
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+
+
+def _merge_fcs_into_brand_summary_csv(path: Path, brands_result: Dict[str, Any]) -> None:
+    """Add fcs_score column to existing brand_summary.csv."""
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fieldnames = list(reader.fieldnames or []) + ["fcs_score"]
+    for row in rows:
+        label = row.get("label", "")
+        fcs = brands_result.get(label, {}).get("fcs_breakdown", {})
+        row["fcs_score"] = fcs.get("fcs_score", "")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def run_pipeline(
@@ -471,6 +502,12 @@ def run_pipeline(
         "output_dir": str(run_dir.resolve()),
     }
 
+    # Add FCS and metric_inputs into existing brand_summary files
+    if config.save_report_json:
+        _merge_fcs_into_brand_summary_json(run_dir / "brand_summary.json", brands_result)
+    if config.save_report_csv:
+        _merge_fcs_into_brand_summary_csv(run_dir / "brand_summary.csv", brands_result)
+
     # ---- Console summary (CLI usage) ----
     print(f"\n{'='*60}")
     print(f"  Results — mode: {mode}")
@@ -491,6 +528,8 @@ def run_pipeline(
             f"{s.total_screen_time_sec / media.duration_sec * 100:.1f}%"
             if media.is_video and media.duration_sec > 0 else "N/A"
         )
+        fcs = brands_result.get(label, {}).get("fcs_breakdown", {})
+        fcs_score = fcs.get("fcs_score", 0)
         print(f"  [{label}]")
         print(f"    Detections      : {s.total_detections}")
         print(f"    Screen time     : {s.total_screen_time_sec:.1f}s ({vis_pct_str} of video)")
@@ -499,6 +538,7 @@ def run_pipeline(
         print(f"    Avg position    : ({s.avg_position_nx:.2f}, {s.avg_position_ny:.2f})")
         print(f"    Dominant region : {s.dominant_quadrant}")
         print(f"    Avg confidence  : {s.avg_confidence:.3f}")
+        print(f"    FCS score       : {fcs_score:.4f}")
         print()
 
     if missing:
