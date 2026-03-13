@@ -835,6 +835,21 @@ def _process_video_job(job_id: str) -> None:
             except Exception as ue:
                 log.warning("Run outputs S3 upload failed: %s", ue)
 
+        # Eval inference arm: compare pipeline OCR results with Gemini ground-truth
+        try:
+            from src.eval_inference import run_eval
+            eval_rows = run_eval(
+                video_path=local_path,
+                video_name=video_id,
+                detection_details=result.get("detection_details", []),
+                total_frames=result.get("frames_analysed", 0),
+                sample_fps=_FPS,
+            )
+            if eval_rows is not None:
+                result["eval_results"] = eval_rows
+        except Exception as eval_exc:
+            log.warning("Eval inference failed for job %s: %s", job_id, eval_exc)
+
         db.update_job_status(
             job_id, "completed",
             result_json=json.dumps(result, default=str),
