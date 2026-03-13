@@ -145,6 +145,52 @@ On some CPU-only environments (e.g. AWS without GPU), PaddleOCR can hit an Intel
    ```
    (Official CPU wheel is typically named `paddlepaddle`; GPU is `paddlepaddle-gpu`.)
 
+## API Testing
+
+The API runs with FastAPI. Start the server, then test with the Swagger UI or curl.
+
+### 1. Start the server
+
+```bash
+uvicorn api:app --host 0.0.0.0 --port 8000
+# Or with auto-reload:  uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 2. Interactive docs (Swagger)
+
+Open in a browser:
+
+- **Swagger UI:** http://localhost:8000/docs  
+- **ReDoc:** http://localhost:8000/redoc  
+
+Use "Try it out" on each endpoint to send requests and see responses.
+
+### 3. Quick smoke test (curl)
+
+```bash
+# Health
+curl http://localhost:8000/health
+
+# List logos
+curl http://localhost:8000/logos
+
+# Register a logo (multipart)
+curl -X POST http://localhost:8000/logos \
+  -F "logo_id=my_brand" -F "name=My Brand" -F "detection_method=both"
+
+# Submit a video job (JSON)
+curl -X POST http://localhost:8000/process \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://your-cdn.com/video.mp4","video_id":"post_123","engagements":5000,"target_logos":["my_brand"]}'
+
+# Poll job status (use job_id from the response above)
+curl http://localhost:8000/jobs/<job_id>
+
+# Stats (all logos or filter by logo_ids)
+curl http://localhost:8000/stats
+curl "http://localhost:8000/stats?logo_ids=my_brand,other_brand"
+```
+
 ## Programmatic Usage
 
 ```python
