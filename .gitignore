@@ -1,11 +1,43 @@
-*.pt
-.venv/
-outputs/
+# Python
 __pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
 bin/
 include/
 lib/
-lib64/
-sample/
-*.mp4
+lib64
+pyvenv.cfg
+
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+
+# Large binary files
+*.pt
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Runtime outputs
+outputs/
+
+# Sample / training data
+sample/
+train/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+*.env

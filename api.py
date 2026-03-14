@@ -603,6 +603,22 @@ def health():
     return {"status": "ok"}
 
 
+# ── SageMaker-compatible routes ──────────────────────────────────────
+# SageMaker calls GET /ping for health checks and POST /invocations
+# for inference.  These proxy to the existing endpoints so the same
+# image works both standalone and behind a SageMaker endpoint.
+
+@app.get("/ping")
+def sagemaker_ping():
+    return {"status": "ok"}
+
+
+@app.post("/invocations")
+def sagemaker_invocations(req: ProcessRequest):
+    """SageMaker inference entry point — same as POST /process."""
+    return submit_video(req)
+
+
 # =====================================================================
 # INTERNAL HELPERS
 # =====================================================================

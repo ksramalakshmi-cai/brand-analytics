@@ -1,0 +1,16 @@
+#!/bin/bash
+# SageMaker container entry point.
+# Reads SAGEMAKER_BIND_TO_PORT (set by SageMaker) or defaults to 8000.
+
+set -e
+
+PORT="${SAGEMAKER_BIND_TO_PORT:-8000}"
+WORKERS="${BA_WORKERS:-1}"
+
+echo "Starting Brand Analytics API on port ${PORT} with ${WORKERS} worker(s)..."
+
+exec uvicorn api:app \
+    --host 0.0.0.0 \
+    --port "${PORT}" \
+    --workers "${WORKERS}" \
+    --timeout-keep-alive 300

@@ -1,0 +1,46 @@
+# Version control
+.git
+.gitignore
+
+# Python virtualenv / build artefacts
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Large / runtime files that should not be baked into the image
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.pt
+outputs/
+sample/
+train/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Venv scaffolding copied into project root
+bin/
+include/
+lib/
+lib64
+pyvenv.cfg
+
+# Shell test scripts
+test.sh
+
+# Docker context meta
+Dockerfile
+.dockerignore
